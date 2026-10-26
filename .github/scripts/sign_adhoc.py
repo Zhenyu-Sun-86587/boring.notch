@@ -13,6 +13,29 @@ def run(*args):
 
 def sign_app(app):
     app = app.resolve(strict=True)
+    # Hardened Runtime otherwise rejects ad-hoc frameworks because there is no Team ID.
+    # Keep the sandbox and other runtime protections; opt out only of library validation.
+    with Path("boringNotch/boringNotch.entitlements").open("rb") as source:
+        entitlements = plistlib.load(source)
+    with (app / "Contents/Info.plist").open("rb") as source:
+        app_info = plistlib.load(source)
+    identifier = app_info["CFBundleIdentifier"]
+
+    def expand(value):
+        if isinstance(value, str):
+            return value.replace("$(PRODUCT_BUNDLE_IDENTIFIER)", identifier)
+        if isinstance(value, list):
+            return [expand(item) for item in value]
+        if isinstance(value, dict):
+            return {key: expand(item) for key, item in value.items()}
+        return value
+
+    entitlements = expand(entitlements)
+    entitlements["com.apple.security.cs.disable-library-validation"] = True
+    signing_entitlements = Path("build/adhoc.entitlements")
+    signing_entitlements.parent.mkdir(parents=True, exist_ok=True)
+    with signing_entitlements.open("wb") as target:
+        plistlib.dump(entitlements, target)
     report = []
     binaries = []
     for path in sorted(app.rglob("*")):
@@ -38,13 +61,18 @@ def sign_app(app):
             continue
         args = ["codesign", "--force", "--sign", "-", "--timestamp=none"]
         if bundle == app:
-            args += ["--options", "runtime", "--entitlements", "boringNotch/boringNotch.entitlements"]
+            args += ["--options", "runtime", "--entitlements", str(signing_entitlements)]
         elif bundle.suffix == ".xpc" and bundle.name == "BoringNotchXPCHelper.xpc":
             args += ["--entitlements", "BoringNotchXPCHelper/BoringNotchXPCHelper.entitlements"]
         else:
             args += ["--preserve-metadata=entitlements"]
         run(*args, str(bundle))
     run("codesign", "--verify", "--deep", "--strict", "--verbose=2", str(app))
+    signed_entitlements = plistlib.loads(subprocess.check_output(
+        ["codesign", "--display", "--entitlements", ":-", str(app)], stderr=subprocess.DEVNULL))
+    assert signed_entitlements["com.apple.security.cs.disable-library-validation"] is True
+    assert signed_entitlements["com.apple.security.app-sandbox"] is True
+    assert "$(PRODUCT_BUNDLE_IDENTIFIER)" not in str(signed_entitlements)
     for binary in binaries:
         assert run("lipo", "-archs", str(binary)) == "arm64", binary
         report.append(f"arm64: {binary.relative_to(app)}")
