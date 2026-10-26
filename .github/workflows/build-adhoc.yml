@@ -4,7 +4,7 @@ on:
   push:
     branches: [feat/hermes-island, 'codex/hermes-*']
   pull_request:
-    paths: ['boringNotch/**', 'Packages/IslandCore/**', 'boringNotch.xcodeproj/**', '.github/workflows/build-adhoc.yml', '.github/scripts/sign_adhoc.py']
+    paths: ['boringNotch/**', 'Packages/IslandCore/**', 'boringNotch.xcodeproj/**', '.github/workflows/build-adhoc.yml', '.github/scripts/sign_adhoc.py', '.github/scripts/create_adhoc_dmg.sh']
   workflow_dispatch:
 
 permissions:
@@ -48,6 +48,8 @@ jobs:
         run: |
           cp THIRD_PARTY_LICENSES 'build/DerivedData/Build/Products/Release/Boring Notch.app/Contents/Resources/THIRD_PARTY_LICENSES'
           python3 .github/scripts/sign_adhoc.py 'build/DerivedData/Build/Products/Release/Boring Notch.app'
+      - name: Create and verify drag-to-Applications DMG
+        run: bash .github/scripts/create_adhoc_dmg.sh 'build/DerivedData/Build/Products/Release/Boring Notch.app' 'build/Boring Notch.dmg'
       - name: Package executable app
         shell: bash
         run: |
@@ -55,7 +57,7 @@ jobs:
           APP='build/DerivedData/Build/Products/Release/Boring Notch.app'
           test -x "$APP/Contents/MacOS/Boring Notch"
           ditto -c -k --sequesterRsrc --keepParent "$APP" 'build/Boring Notch.app.zip'
-          shasum -a 256 'build/Boring Notch.app.zip' > build/SHA256SUMS
+          shasum -a 256 'build/Boring Notch.app.zip' 'build/Boring Notch.dmg' > build/SHA256SUMS
           git rev-parse HEAD > build/COMMIT_SHA
           {
             echo '## Hermes ARM64 Ad-hoc build'
@@ -70,6 +72,7 @@ jobs:
           if-no-files-found: error
           path: |
             build/Boring Notch.app.zip
+            build/Boring Notch.dmg
             build/SHA256SUMS
             build/COMMIT_SHA
             build/signing-report.txt

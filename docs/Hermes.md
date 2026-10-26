@@ -41,7 +41,8 @@ No credentials, live service addresses or note contents are committed to the rep
 
 The **Hermes Ad-hoc Build** Action runs on branch pushes or manual dispatch. It selects Xcode 27.1,
 builds ARM64 without certificate secrets, signs nested code inside out, verifies signatures and architectures,
-then uploads `Boring Notch.app.zip`, `SHA256SUMS`, commit SHA and signing diagnostics.
+then creates and verifies a compressed DMG with an Applications shortcut using native macOS disk tools.
+It uploads `Boring Notch.dmg`, `Boring Notch.app.zip`, `SHA256SUMS`, commit SHA and signing diagnostics.
 The shared scheme is tracked explicitly. No upstream release, appcast or Homebrew publication is invoked.
 
 Local Command Line Tools can run:
