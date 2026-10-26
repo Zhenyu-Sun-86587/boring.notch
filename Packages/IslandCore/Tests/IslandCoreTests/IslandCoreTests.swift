@@ -188,7 +188,10 @@ func checkStreaming(endpoint: URL) async throws {
                                 messages: [ChatMessage(role: "user", text: "cancel")]) { _ in }
     }
     try await Task.sleep(for: .milliseconds(100))
+    let clock = ContinuousClock()
+    let start = clock.now
     task.cancel()
     try await expectThrowsAsync { try await task.value }
+    try expect(start.duration(to: clock.now) < .seconds(1))
     print("PASS: URLSession.bytes SSE completion and cancellation against localhost fixture")
 }

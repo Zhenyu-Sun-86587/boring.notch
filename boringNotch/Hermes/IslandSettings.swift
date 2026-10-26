@@ -12,7 +12,10 @@ enum IslandSettings {
     static let surfaceDefault = "/Users/sunzhenyu/Desktop/sync/HermesSurface"
     static func string(_ key: String) -> String { UserDefaults.standard.string(forKey: "island." + key) ?? "" }
     static func hermes() throws -> HermesConfiguration {
-        HermesConfiguration(endpoint: try ServiceURL.parse(string("hermesURL")), model: string("model"), apiKey: try IslandKeychain.read("hermesKey"))
+        let endpoint = try ServiceURL.parse(string("hermesURL"))
+        let model = string("model").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !model.isEmpty else { throw IslandError.configuration("请先在设置中填写 Hermes 模型名称。") }
+        return HermesConfiguration(endpoint: endpoint, model: model, apiKey: try IslandKeychain.read("hermesKey"))
     }
     static func todo() throws -> TodoConfiguration {
         let excluded = Set(string("excludedProjects").split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) })

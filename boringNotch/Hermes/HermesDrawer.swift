@@ -59,6 +59,12 @@ struct HermesDrawer: View {
                 TextField("Ask Hermes…", text: $store.input, axis: .vertical)
                     .lineLimit(1...4).textFieldStyle(.plain).focused($inputFocused)
                     .onSubmit { store.send() }
+                    .onKeyPress(.return) { key in
+                        let composing = (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() ?? false
+                        guard !key.modifiers.contains(.shift), !composing else { return .ignored }
+                        store.send()
+                        return .handled
+                    }
                     .disabled(store.isGenerating)
                 if store.isGenerating {
                     Button("Stop", systemImage: "stop.fill") { store.stop() }.labelStyle(.iconOnly)
@@ -97,6 +103,9 @@ struct HermesDrawer: View {
         .onDisappear {
             inputFocused = false
             store.disappeared(vm.screenUUID ?? "primary")
+        }
+        .onChange(of: store.isGenerating) { _, generating in
+            if !generating { inputFocused = true }
         }
         .onReceive(NotificationCenter.default.publisher(for: .islandLocked)) { _ in inputFocused = false; store.stop() }
     }
