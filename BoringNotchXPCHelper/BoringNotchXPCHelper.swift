@@ -57,26 +57,73 @@ class BoringNotchXPCHelper: NSObject, BoringNotchXPCHelperProtocol {
         reply(AXIsProcessTrusted())
     }
 
-    /// Posting input belongs in the already unsandboxed, user-authorized helper.
-    /// Refuse to paste if focus has moved since the user picked the history item.
-    @objc func pasteClipboard(toProcessIdentifier targetPID: Int32, with reply: @escaping (Bool) -> Void) {
+    @MainActor private static let clipboardPaster = ClipboardPasteCoordinator()
+
+    /// The host first orders its panel out. Verify the actual keyboard owner,
+    /// physical key/button release and unchanged pasteboard before posting once.
+    @objc func pasteClipboard(toProcessIdentifier targetPID: Int32, hostProcessIdentifier hostPID: Int32,
+                              pasteboardChangeCount: Int, requestID: String, with reply: @escaping (String) -> Void) {
+        // A noninteractive transport probe uses an invalid PID. It must not read
+        // the pasteboard, inspect focus, prompt for access or post any event.
+        guard targetPID > 0 else { reply(ClipboardPasteResult.targetUnavailable.rawValue); return }
         DispatchQueue.main.async {
-            guard targetPID > 0, AXIsProcessTrusted(),
-                  NSWorkspace.shared.frontmostApplication?.processIdentifier == targetPID,
-                  NSEvent.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
-                  let source = CGEventSource(stateID: .combinedSessionState),
-                  let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
-                  let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else {
-                reply(false)
-                return
+            Task { @MainActor in
+                let systemWide = AXUIElementCreateSystemWide()
+                AXUIElementSetMessagingTimeout(systemWide, 0.05)
+                func observe() -> ClipboardPasteObservation {
+                    var focused: CFTypeRef?
+                    let error = AXUIElementCopyAttributeValue(systemWide, kAXFocusedApplicationAttribute as CFString, &focused)
+                    var focusedPID: pid_t?
+                    if error == .success, let focused, CFGetTypeID(focused) == AXUIElementGetTypeID() {
+                        var pid: pid_t = 0
+                        if AXUIElementGetPid(focused as! AXUIElement, &pid) == .success { focusedPID = pid }
+                    }
+                    let modifiers: CGEventFlags = [.maskCommand, .maskControl, .maskAlternate, .maskShift]
+                    let released = CGEventSource.flagsState(.hidSystemState).intersection(modifiers).isEmpty
+                        && ![CGKeyCode(36), 76, 9].contains { CGEventSource.keyState(.hidSystemState, key: $0) }
+                        && !CGEventSource.buttonState(.hidSystemState, button: .left)
+                    let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+                    return ClipboardPasteObservation(authorized: AXIsProcessTrusted(),
+                        unlocked: session != nil && session?["CGSSessionScreenIsLocked"] as? Bool != true,
+                        targetAlive: targetPID > 0 && NSRunningApplication(processIdentifier: targetPID)?.isTerminated == false,
+                        clipboardUnchanged: NSPasteboard.general.changeCount == pasteboardChangeCount,
+                        foregroundPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
+                        focusedPID: focusedPID,
+                        // Some Qt/custom applications expose no usable focus tree,
+                        // including noValue/cannotComplete or a missing PID. An
+                        // explicit different PID remains a firm focus mismatch.
+                        focusProbeAvailable: focusedPID != nil,
+                        inputReleased: released)
+                }
+                let result = await Self.clipboardPaster.perform(requestID: requestID, targetPID: targetPID, hostPID: hostPID,
+                    environment: .init(observe: observe, post: {
+                        let current = observe()
+                        guard current.authorized, current.unlocked, current.targetAlive,
+                              current.clipboardUnchanged, current.inputReleased, current.foregroundPID == targetPID,
+                              current.focusedPID == targetPID || !current.focusProbeAvailable,
+                              let source = CGEventSource(stateID: .combinedSessionState),
+                              let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
+                              let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else { return false }
+                        source.setLocalEventsFilterDuringSuppressionState([.permitLocalMouseEvents, .permitSystemDefinedEvents],
+                            state: .eventSuppressionStateSuppressionInterval)
+                        source.localEventsSuppressionInterval = 0.02
+                        // Include the device-side left Command bit used by native
+                        // clipboard managers; route through the normal session so
+                        // Chromium/Qt dispatch the shortcut to their active control.
+                        let command = CGEventFlags(rawValue: CGEventFlags.maskCommand.rawValue | 0x000008)
+                        down.flags = command
+                        up.flags = command
+                        down.post(tap: .cgSessionEventTap)
+                        up.post(tap: .cgSessionEventTap)
+                        return true
+                    }))
+                reply(result.rawValue)
             }
-            down.flags = .maskCommand
-            up.flags = .maskCommand
-            down.postToPid(targetPID)
-            up.postToPid(targetPID)
-            // The OS does not acknowledge whether a destination accepted a paste.
-            reply(true)
         }
+    }
+
+    @objc func cancelClipboardPaste(_ requestID: String) {
+        DispatchQueue.main.async { Self.clipboardPaster.cancel(requestID) }
     }
 
     @objc func migrateLegacyAppBundle(

@@ -75,10 +75,7 @@ struct ClipboardDrawer: View {
                         GeometryReader { geometry in
                             ClipboardPointerObserver(rowFrames: rowFrames,
                                 keyboardRevision: store.keyboardSelectionRevision,
-                                select: { id, clicked in
-                                    store.select(id)
-                                    if clicked { focusSearch() }
-                                }, activate: { id in
+                                select: { id in store.select(id) }, activate: { id in
                                     guard let record = store.filteredRecords.first(where: { $0.id == id }) else { return }
                                     store.copy(record, paste: true)
                                 })
@@ -110,9 +107,9 @@ struct ClipboardDrawer: View {
                 Text("\(store.filteredRecords.count) 条").foregroundStyle(.secondary)
                 Spacer()
                 Button("复制") { store.copySelected(paste: false) }
-                    .disabled(store.selectedRecord == nil || store.busy)
+                    .disabled(store.selectedRecord == nil || store.busy || store.pasting)
                 Button("粘贴") { store.copySelected(paste: true) }
-                    .disabled(store.selectedRecord == nil || store.busy)
+                    .disabled(store.selectedRecord == nil || store.busy || store.pasting)
             }
             .font(.caption)
             .buttonStyle(.plain)
@@ -174,15 +171,16 @@ private struct ClipboardViewportHeight: PreferenceKey {
 private struct ClipboardPointerObserver: NSViewRepresentable {
     let rowFrames: [String: CGRect]
     let keyboardRevision: UInt
-    let select: (String, Bool) -> Void
+    let select: (String) -> Void
     let activate: (String) -> Void
 
     final class ObserverView: NSView {
         var rowFrames: [String: CGRect] = [:]
-        var select: ((String, Bool) -> Void)?
+        var select: ((String) -> Void)?
         var activate: ((String) -> Void)?
         private var keyboardRevision: UInt?
         private var pointerGate = ClipboardPointerSelectionGate()
+        private var pointerActivation = ClipboardPointerActivation()
         private var monitor: Any?
         private var pointerTracking: NSTrackingArea?
 
@@ -190,7 +188,7 @@ private struct ClipboardPointerObserver: NSViewRepresentable {
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
         func receive(rowFrames: [String: CGRect], keyboardRevision: UInt,
-                     select: @escaping (String, Bool) -> Void, activate: @escaping (String) -> Void) {
+                     select: @escaping (String) -> Void, activate: @escaping (String) -> Void) {
             self.rowFrames = rowFrames
             self.select = select
             self.activate = activate
@@ -204,9 +202,10 @@ private struct ClipboardPointerObserver: NSViewRepresentable {
             super.viewDidMoveToWindow()
             stopMonitoring()
             guard window != nil else { return }
-            monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .mouseMoved]) { [weak self] event in
-                MainActor.assumeIsolated { self?.handle(event) }
-                return event
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp, .leftMouseDragged,
+                                                                  .rightMouseDown, .scrollWheel, .mouseMoved]) { [weak self] event in
+                let consumed = MainActor.assumeIsolated { self?.handle(event) ?? false }
+                return consumed ? nil : event
             }
         }
 
@@ -219,8 +218,39 @@ private struct ClipboardPointerObserver: NSViewRepresentable {
             pointerTracking = tracking
         }
 
-        private func handle(_ event: NSEvent) {
-            guard let window, event.window === window, window.isVisible, !isHiddenOrHasHiddenAncestor else { return }
+        private func handle(_ event: NSEvent) -> Bool {
+            guard let window, event.window === window, window.isVisible, !isHiddenOrHasHiddenAncestor else { return false }
+            let point = convert(event.locationInWindow, from: nil)
+            if event.type == .scrollWheel || event.type == .rightMouseDown {
+                pointerActivation.cancelActivation()
+                return false
+            }
+            if event.type == .leftMouseDragged {
+                pointerActivation.mouseDragged(to: point)
+                return false
+            }
+            let id = hitRowID(event, in: window, at: point)
+            if event.type == .leftMouseDown {
+                let result = pointerActivation.mouseDown(rowID: id, at: point, clickCount: event.clickCount)
+                if result.consumesEvent, let id { select?(id) }
+                return result.consumesEvent
+            }
+            if event.type == .leftMouseUp {
+                let result = pointerActivation.mouseUp(rowID: id, at: point)
+                if let activated = result.activatedID { activate?(activated) }
+                // Activation closes the panel. Do not let AppKit handle this click afterwards
+                // and make the closing panel key again instead of the paste destination.
+                return result.consumesEvent
+            }
+            if event.type == .mouseMoved, let id,
+               pointerGate.acceptsMovement(at: NSEvent.mouseLocation,
+                   delta: CGSize(width: event.deltaX, height: event.deltaY)) {
+                select?(id)
+            }
+            return false
+        }
+
+        private func hitRowID(_ event: NSEvent, in window: NSWindow, at point: CGPoint) -> String? {
             // Overlay scrollers cover row geometry, but clicking their thumb/track is scrolling,
             // never row selection or double-click paste. hitTest expects its superview's coordinates.
             if let contentView = window.contentView {
@@ -228,26 +258,16 @@ private struct ClipboardPointerObserver: NSViewRepresentable {
                     ?? event.locationInWindow
                 var hit = contentView.hitTest(hitPoint)
                 while let view = hit {
-                    if view is NSScroller { return }
+                    if view is NSScroller { return nil }
                     hit = view.superview
                 }
             }
-            let point = convert(event.locationInWindow, from: nil)
-            guard let id = ClipboardSelectionPolicy.hitID(at: point, viewport: bounds.intersection(visibleRect),
-                                                          rows: rowFrames) else { return }
-            if event.type == .leftMouseDown {
-                // mouseDown is immediate; separate competing tap recognizers delay a single selection.
-                select?(id, true)
-                if event.clickCount == 2 { activate?(id) }
-            } else if event.type == .mouseMoved,
-                      pointerGate.acceptsMovement(at: NSEvent.mouseLocation,
-                        delta: CGSize(width: event.deltaX, height: event.deltaY)) {
-                select?(id, false)
-            }
+            return ClipboardSelectionPolicy.hitID(at: point, viewport: bounds.intersection(visibleRect), rows: rowFrames)
         }
 
         func stopMonitoring() {
             if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
+            pointerActivation.cancel()
         }
     }
 

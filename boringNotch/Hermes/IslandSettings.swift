@@ -14,7 +14,21 @@ enum IslandSettings {
         let endpoint = try ServiceURL.parse(string("hermesURL"))
         let model = string("model").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !model.isEmpty else { throw IslandError.configuration("请先在设置中填写 Hermes 模型名称。") }
-        return HermesConfiguration(endpoint: endpoint, model: model, apiKey: try IslandKeychain.read("hermesKey"))
+        let configuration = HermesConfiguration(endpoint: endpoint, model: model, apiKey: try IslandKeychain.read("hermesKey"),
+            accessClientID: string("hermesAccessID"), accessClientSecret: try IslandKeychain.read("hermesAccessSecret"),
+            extraHeaders: try customHeaders())
+        _ = try HermesRequestHeaders.validated(apiKey: configuration.apiKey,
+            accessClientID: configuration.accessClientID, accessClientSecret: configuration.accessClientSecret,
+            extra: configuration.extraHeaders)
+        return configuration
+    }
+    static func customHeaders() throws -> [HermesHeader] {
+        let saved = try IslandKeychain.read("hermesHeaders")
+        guard !saved.isEmpty else { return [] }
+        guard let data = saved.data(using: .utf8), let headers = try? JSONDecoder().decode([HermesHeader].self, from: data) else {
+            throw IslandError.configuration("无法读取自定义请求头，请重新配置。")
+        }
+        return headers
     }
 }
 
@@ -50,10 +64,20 @@ enum IslandKeychain {
     }
 }
 
+private struct EditableHermesHeader: Identifiable {
+    let id = UUID()
+    var name = ""
+    var value = ""
+    init(name: String = "", value: String = "") { self.name = name; self.value = value }
+}
+
 struct IslandSettingsView: View {
     @State private var hermesURL = IslandSettings.string("hermesURL")
     @State private var model = IslandSettings.string("model")
     @State private var hermesKey = ""
+    @State private var accessID = IslandSettings.string("hermesAccessID")
+    @State private var accessSecret = ""
+    @State private var extraHeaders: [EditableHermesHeader] = []
     @State private var message: String?
     @State private var secretsLoaded = false
     @ObservedObject private var surface = SurfaceAccess.shared
@@ -64,6 +88,24 @@ struct IslandSettingsView: View {
                 TextField("接口地址", text: $hermesURL, prompt: Text("https://host/v1/chat/completions"))
                 TextField("模型", text: $model)
                 SecureField("API 密钥", text: $hermesKey)
+            }
+            Section("Cloudflare Access 认证") {
+                TextField("客户端 ID", text: $accessID)
+                SecureField("客户端密钥", text: $accessSecret)
+            }
+            Section("自定义请求头") {
+                ForEach($extraHeaders) { $header in
+                    HStack {
+                        TextField("请求头名称", text: $header.name)
+                        SecureField("值", text: $header.value)
+                        Button { let id = header.id; extraHeaders.removeAll { $0.id == id } } label: { Image(systemName: "minus.circle") }
+                            .buttonStyle(.borderless).help("移除请求头")
+                    }
+                }
+                Button("添加请求头", systemImage: "plus") { extraHeaders.append(EditableHermesHeader()) }
+                    .disabled(extraHeaders.count >= 32)
+            }
+            Section {
                 Button("保存配置") { save() }.disabled(!secretsLoaded)
                 if let message { Text(message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
             }
@@ -89,6 +131,8 @@ struct IslandSettingsView: View {
         .onAppear {
             do {
                 hermesKey = try IslandKeychain.read("hermesKey")
+                accessSecret = try IslandKeychain.read("hermesAccessSecret")
+                extraHeaders = try IslandSettings.customHeaders().map { EditableHermesHeader(name: $0.name, value: $0.value) }
                 secretsLoaded = true
             } catch { message = error.localizedDescription }
         }
@@ -96,8 +140,18 @@ struct IslandSettingsView: View {
     private func save() {
         do {
             if !hermesURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { _ = try ServiceURL.parse(hermesURL) }
+            let headers = extraHeaders.filter { !$0.name.isEmpty || !$0.value.isEmpty }
+                .map { HermesHeader(name: $0.name, value: $0.value) }
+            _ = try HermesRequestHeaders.validated(apiKey: hermesKey, accessClientID: accessID,
+                accessClientSecret: accessSecret, extra: headers)
+            let headerData = try JSONEncoder().encode(headers)
+            guard let savedHeaders = String(data: headerData, encoding: .utf8) else {
+                throw IslandError.configuration("无法保存自定义请求头。")
+            }
             try IslandKeychain.write(hermesKey, account: "hermesKey")
-            for (key, value) in ["hermesURL": hermesURL, "model": model] {
+            try IslandKeychain.write(accessSecret, account: "hermesAccessSecret")
+            try IslandKeychain.write(headers.isEmpty ? "" : savedHeaders, account: "hermesHeaders")
+            for (key, value) in ["hermesURL": hermesURL, "model": model, "hermesAccessID": accessID] {
                 UserDefaults.standard.set(value.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "island." + key)
             }
             NotificationCenter.default.post(name: .islandConfigurationChanged, object: nil)

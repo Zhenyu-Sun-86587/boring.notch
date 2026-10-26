@@ -26,6 +26,7 @@ final class ClipboardStore: ObservableObject {
     @Published var keyboardSessionActive = false
     @Published private(set) var message: String?
     @Published private(set) var busy = false
+    @Published private(set) var pasting = false
     @Published private(set) var needsReadAccess = false
     @Published private(set) var readDenied = false
     @Published var enabled: Bool {
@@ -120,6 +121,7 @@ final class ClipboardStore: ObservableObject {
         if enabled { restartMonitor() }
     }
     func beginSession(target: NSRunningApplication?) {
+        pasting = false
         sessionGeneration = UUID()
         sessionTarget = nil
         start()
@@ -131,6 +133,7 @@ final class ClipboardStore: ObservableObject {
         applyLimits()
     }
     func endSession() {
+        pasting = false
         sessionGeneration = UUID()
         copyTask?.cancel(); copyTask = nil
         keyboardSessionActive = false
@@ -147,6 +150,9 @@ final class ClipboardStore: ObservableObject {
     }
     func reportPasteError(_ value: String) { message = value }
     func clearMessage() { message = nil }
+    func finishPaste(sessionID: String) {
+        if sessionID == sessionGeneration.uuidString { pasting = false }
+    }
     func requestReadAccess() {
         enabled = true
         needsReadAccess = false
@@ -276,11 +282,11 @@ final class ClipboardStore: ObservableObject {
         keyboardSelectionRevision &+= 1
     }
     func copySelected(paste: Bool) {
-        guard let record = selectedRecord, !busy else { return }
+        guard let record = selectedRecord, !busy, !pasting else { return }
         copy(record, paste: paste)
     }
     func copy(_ record: ClipboardHistoryRecord, paste: Bool) {
-        guard !busy, !locked else { return }
+        guard !busy, !pasting, !locked else { return }
         busy = true
         let target = sessionTarget
         let generation = sessionGeneration
@@ -325,8 +331,10 @@ final class ClipboardStore: ObservableObject {
                         NotificationCenter.default.post(name: .clipboardDismissRequested, object: nil, userInfo: ["sessionID": generation.uuidString])
                         return
                     }
+                    pasting = true
                     NotificationCenter.default.post(name: .clipboardPasteRequested, object: nil,
-                                                    userInfo: ["targetPID": Int(target.processIdentifier), "sessionID": generation.uuidString])
+                                                    userInfo: ["targetPID": Int(target.processIdentifier), "sessionID": generation.uuidString,
+                                                               "changeCount": changeCount])
                 } else {
                     NotificationCenter.default.post(name: .clipboardDismissRequested, object: nil, userInfo: ["sessionID": generation.uuidString])
                 }

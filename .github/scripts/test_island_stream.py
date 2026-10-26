@@ -17,6 +17,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         assert request["stream"] is True and request["model"] == "fixture"
+        assert self.headers["Authorization"] == "Bearer fixture-api"
+        assert self.headers["CF-Access-Client-Id"] == "fixture-client"
+        assert self.headers["CF-Access-Client-Secret"] == "fixture-secret"
+        assert self.headers["X-Gateway-Route"] == "fixture"
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Connection", "close")

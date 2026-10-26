@@ -53,15 +53,16 @@ final class NotchWindowManager {
     // MARK: - Screen lock / unlock
 
     func screenLocked() {
+        let panels = (Array(windows.values) + [primaryWindow].compactMap { $0 }).compactMap { $0 as? BoringNotchSkyLightWindow }
+        let visibleOnLock = panels.filter { $0.isVisible || $0.wasVisibleBeforeHandoff }
         isScreenLocked = true
         ClipboardPresentation.shared.dismiss()
         ClipboardStore.shared.setScreenLocked(true)
         NotificationCenter.default.post(name: .islandLocked, object: nil)
-        for panel in (Array(windows.values) + [primaryWindow].compactMap { $0 }).compactMap({ $0 as? BoringNotchSkyLightWindow }) {
+        for panel in panels {
             panel.isIslandScreenLocked = true
-            panel.allowsIslandKeyboard = false
-            panel.wantsKeyForTextInput = false
-            if panel.isKeyWindow { panel.resignKey() }
+            let token = panel.beginIslandKeyboardHandoff()
+            panel.endIslandKeyboardHandoff(token, restoreVisible: false)
         }
         if BoringViewCoordinator.shared.currentView == .hermes {
             primaryViewModel.close()
@@ -71,6 +72,8 @@ final class NotchWindowManager {
             cleanupWindows()
         } else {
             enableSkyLightOnAllWindows()
+            // Preserve the existing opt-in lock-screen display without restoring keyboard focus.
+            visibleOnLock.forEach { $0.orderFrontRegardless() }
         }
     }
 

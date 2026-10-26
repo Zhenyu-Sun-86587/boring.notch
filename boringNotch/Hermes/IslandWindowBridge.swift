@@ -83,7 +83,8 @@ struct IslandWindowBridge: NSViewRepresentable {
                 // synchronous display while SwiftUI is updating its view hierarchy.
                 window.setFrame(frame, display: false)
             }
-            guard let panel = window as? BoringNotchSkyLightWindow else { return }
+            guard let panel = window as? BoringNotchSkyLightWindow,
+                  !panel.isIslandKeyboardHandoffActive else { return }
             let shouldFocus = request.wantsKeyboard && !panel.isIslandScreenLocked
                 && (request.permitsKeyboardWithoutHover || frame.contains(NSEvent.mouseLocation))
             if shouldFocus {
@@ -94,7 +95,7 @@ struct IslandWindowBridge: NSViewRepresentable {
                 let previouslyOwnedFocus = panel.allowsIslandKeyboard
                 panel.islandKeyboardOwner = nil
                 panel.allowsIslandKeyboard = false
-                if previouslyOwnedFocus && panel.isKeyWindow && !panel.wantsKeyForTextInput { panel.resignKey() }
+                if panel.isKeyWindow && !panel.wantsKeyForTextInput && (previouslyOwnedFocus || panel.isIslandScreenLocked) { panel.releaseIslandKeyboard() }
             }
         }
 
@@ -114,7 +115,7 @@ struct IslandWindowBridge: NSViewRepresentable {
                       panel.islandKeyboardOwner == ownerID else { return }
                 panel.islandKeyboardOwner = nil
                 panel.allowsIslandKeyboard = false
-                if panel.isKeyWindow && !panel.wantsKeyForTextInput { panel.resignKey() }
+                if panel.isKeyWindow && !panel.wantsKeyForTextInput { panel.releaseIslandKeyboard() }
             }
         }
     }

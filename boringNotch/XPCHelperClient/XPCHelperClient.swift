@@ -227,19 +227,32 @@ final class XPCHelperClient: NSObject, ObservableObject {
         }
     }
 
-    func pasteClipboard(to targetPID: Int32) async -> Bool {
-        do {
-            let service = ensureRemoteService()
-            return try await service.withContinuation { service, continuation in
-                service.pasteClipboard(toProcessIdentifier: targetPID) { posted in
-                    continuation.resume(returning: posted)
+    func pasteClipboard(to targetPID: Int32, changeCount: Int, requestID: UUID) async -> ClipboardPasteResult {
+        guard !Task.isCancelled else { return .cancelled }
+        return await withTaskCancellationHandler {
+            do {
+                let service = ensureRemoteService()
+                let result: String = try await service.withContinuation { service, continuation in
+                    service.pasteClipboard(toProcessIdentifier: targetPID,
+                        hostProcessIdentifier: ProcessInfo.processInfo.processIdentifier,
+                        pasteboardChangeCount: changeCount, requestID: requestID.uuidString) { result in
+                        continuation.resume(returning: result)
+                    }
                 }
+                return ClipboardPasteResult(rawValue: result) ?? .eventFailure
+            } catch {
+                lastError = .transport(underlying: error)
+                helperAvailable = false
+                return .eventFailure
             }
-        } catch {
-            lastError = .transport(underlying: error)
-            helperAvailable = false
-            return false
+        } onCancel: {
+            Task { @MainActor in await self.cancelClipboardPaste(requestID) }
         }
+    }
+
+    func cancelClipboardPaste(_ requestID: UUID) async {
+        let service = ensureRemoteService()
+        try? await service.withService { $0.cancelClipboardPaste(requestID.uuidString) }
     }
 
     // MARK: - Keyboard Brightness

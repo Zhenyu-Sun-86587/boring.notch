@@ -33,9 +33,16 @@ extension SkyLightOperator {
 
 class BoringNotchSkyLightWindow: NSPanel {
     private var isSkyLightEnabled: Bool = false
-    var allowsIslandKeyboard = false
+    let islandKeyboardHandoffState = IslandKeyboardHandoffState()
+    var allowsIslandKeyboard = false {
+        didSet {
+            if allowsIslandKeyboard && isIslandKeyboardHandoffActive { allowsIslandKeyboard = false }
+        }
+    }
     var islandKeyboardOwner: UUID?
-    var isIslandScreenLocked = false
+    var isIslandScreenLocked = false {
+        didSet { if isIslandScreenLocked { invalidateIslandKeyboardHandoff() } }
+    }
 
     override init(
         contentRect: NSRect,
@@ -162,12 +169,37 @@ class BoringNotchSkyLightWindow: NSPanel {
     var wantsKeyForTextInput = false {
         didSet {
             guard wantsKeyForTextInput != oldValue else { return }
-            if wantsKeyForTextInput {
-                makeKey()
+            if wantsKeyForTextInput && isIslandKeyboardHandoffActive {
+                wantsKeyForTextInput = false
+                return
             }
+            if wantsKeyForTextInput && canBecomeKey { makeKey() }
         }
     }
 
-    override var canBecomeKey: Bool { (wantsKeyForTextInput || allowsIslandKeyboard) && !isIslandScreenLocked }
+    override func orderOut(_ sender: Any?) {
+        if !islandKeyboardHandoffState.performsInternalOrderOut { invalidateIslandKeyboardHandoff() }
+        super.orderOut(sender)
+    }
+
+    override func close() {
+        invalidateIslandKeyboardHandoff(closing: true)
+        super.close()
+    }
+
+    override func orderFront(_ sender: Any?) {
+        guard !isIslandKeyboardHandoffActive, !islandKeyboardHandoffState.isClosed else { return }
+        super.orderFront(sender)
+    }
+
+    override func orderFrontRegardless() {
+        guard !isIslandKeyboardHandoffActive, !islandKeyboardHandoffState.isClosed else { return }
+        super.orderFrontRegardless()
+    }
+
+    override var canBecomeKey: Bool {
+        isVisible && !isIslandKeyboardHandoffActive && !islandKeyboardHandoffState.isClosed
+            && (wantsKeyForTextInput || allowsIslandKeyboard) && !isIslandScreenLocked
+    }
     override var canBecomeMain: Bool { false }
 }

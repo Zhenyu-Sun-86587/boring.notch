@@ -64,3 +64,58 @@ public struct ClipboardPointerSelectionGate: Sendable {
         return true
     }
 }
+
+/// One primary click activates only after matching down/up, without converting drags or a
+/// double-click's second press into additional pastes. No AppKit events or pasteboard access.
+public struct ClipboardPointerActivation: Sendable {
+    public struct Result: Sendable, Equatable {
+        public let consumesEvent: Bool
+        public let activatedID: String?
+        public init(consumesEvent: Bool, activatedID: String? = nil) {
+            self.consumesEvent = consumesEvent
+            self.activatedID = activatedID
+        }
+    }
+    private let dragThreshold: CGFloat
+    private var pressedID: String?
+    private var pressedAt: CGPoint?
+    private var consumesRelease = false
+
+    public init(dragThreshold: CGFloat = 4) { self.dragThreshold = max(0, dragThreshold) }
+
+    public mutating func mouseDown(rowID: String?, at point: CGPoint, clickCount: Int = 1) -> Result {
+        cancel()
+        guard let rowID, point.x.isFinite, point.y.isFinite else { return .init(consumesEvent: false) }
+        consumesRelease = true
+        if clickCount == 1 {
+            pressedID = rowID
+            pressedAt = point
+        }
+        return .init(consumesEvent: true)
+    }
+
+    public mutating func mouseDragged(to point: CGPoint) {
+        guard let pressedAt else { return }
+        guard point.x.isFinite, point.y.isFinite,
+              hypot(point.x - pressedAt.x, point.y - pressedAt.y) <= dragThreshold else {
+            cancelActivation()
+            return
+        }
+    }
+
+    public mutating func mouseUp(rowID: String?, at point: CGPoint) -> Result {
+        let consumesEvent = consumesRelease
+        defer { cancel() }
+        guard consumesEvent, let pressedID, rowID == pressedID, let pressedAt,
+              point.x.isFinite, point.y.isFinite,
+              hypot(point.x - pressedAt.x, point.y - pressedAt.y) <= dragThreshold else {
+            return .init(consumesEvent: consumesEvent)
+        }
+        return .init(consumesEvent: true, activatedID: pressedID)
+    }
+
+    /// A wheel/right-button event cancels activation, while the intercepted primary release
+    /// still needs consuming so AppKit cannot re-focus a panel that is about to close.
+    public mutating func cancelActivation() { pressedID = nil; pressedAt = nil }
+    public mutating func cancel() { cancelActivation(); consumesRelease = false }
+}

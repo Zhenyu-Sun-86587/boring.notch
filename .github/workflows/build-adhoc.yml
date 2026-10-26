@@ -35,12 +35,23 @@ jobs:
         run: |
           swift run --package-path Packages/IslandCore -c release IslandCoreChecks
           python3 .github/scripts/test_island_stream.py
+      - name: Verify paste sequencing without accessing the clipboard
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          python3 .github/scripts/test_clipboard_paste.py 2>&1 | tee build/clipboard-paste-report.txt
       - name: Verify native window resizing without displaying UI
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p build
           python3 .github/scripts/test_window_layout.py 2>&1 | tee build/window-layout-report.txt
+      - name: Verify actual AppKit display cycles in offscreen windows
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/test_ordered_window_layout.py 2>&1 | tee build/window-display-cycle-report.txt
       - name: Build ARM64 application without certificate secrets
         shell: bash
         run: |
@@ -54,6 +65,8 @@ jobs:
             CODE_SIGN_IDENTITY='-' CODE_SIGN_STYLE=Manual \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM='' \
             2>&1 | tee build/xcodebuild.log
+      - name: Verify native Hermes Markdown and math rendering
+        run: python3 .github/scripts/test_hermes_math_rendering.py
       - name: Sign and verify nested components
         run: |
           cp THIRD_PARTY_LICENSES 'build/DerivedData/Build/Products/Release/Boring Notch.app/Contents/Resources/THIRD_PARTY_LICENSES'
@@ -90,6 +103,10 @@ jobs:
             build/signing-report.txt
             build/startup-report.txt
             build/window-layout-report.txt
+            build/window-display-cycle-report.txt
+            build/ordered-window-checks/
+            build/clipboard-paste-report.txt
+            build/hermes-markdown-report.txt
           retention-days: 14
       - name: Upload build diagnostics
         if: always()
@@ -100,6 +117,10 @@ jobs:
             build/xcodebuild.log
             build/startup-report.txt
             build/window-layout-report.txt
+            build/window-display-cycle-report.txt
+            build/ordered-window-checks/
+            build/clipboard-paste-report.txt
+            build/hermes-markdown-report.txt
           if-no-files-found: ignore
           # Keep the resolved dependency graph with diagnostics for reproducibility.
       - name: Upload resolved package versions

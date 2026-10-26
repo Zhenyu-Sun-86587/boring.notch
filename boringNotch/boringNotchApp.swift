@@ -208,6 +208,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--island-smoke-test") {
             Task { @MainActor in
                 let trusted = await XPCHelperClient.shared.isAccessibilityAuthorized()
+                let pasteTransport = await XPCHelperClient.shared.pasteClipboard(to: -1, changeCount: -1, requestID: UUID())
                 let helperOK = XPCHelperClient.shared.helperAvailable && XPCHelperClient.shared.lastError == nil
                 let result: [String: Any] = [
                     "status": helperOK ? "ready" : "helper-unavailable",
@@ -216,6 +217,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     "localizedGeneral": String(localized: "General"),
                     "accessibilityAuthorized": trusted,
                     "helperAvailable": helperOK,
+                    "clipboardPasteTransport": pasteTransport == .targetUnavailable,
                     "calendarUsage": Bundle.main.object(forInfoDictionaryKey: "NSCalendarsFullAccessUsageDescription") as? String ?? "",
                     "reminderUsage": Bundle.main.object(forInfoDictionaryKey: "NSRemindersFullAccessUsageDescription") as? String ?? ""
                 ]

@@ -18,6 +18,7 @@ def main() -> None:
     sources = [
         root / "boringNotch/Hermes/NotchHostingView.swift",
         root / "boringNotch/Hermes/IslandWindowBridge.swift",
+        root / "boringNotch/Hermes/IslandKeyboardHandoff.swift",
         root / ".github/scripts/WindowLayoutChecks.swift",
     ]
     with tempfile.TemporaryDirectory(prefix="boring-window-layout-") as temporary:

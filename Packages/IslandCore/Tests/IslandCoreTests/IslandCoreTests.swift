@@ -99,6 +99,8 @@ func expectThrowsAsync<T>(_ body: () async throws -> T) async throws {
         try await runClipboardHistoryChecks()
         try runClipboardSelectionChecks()
         try clipboardVisibilityChecks()
+        try hermesHeaderConfigurationChecks()
+        try runHermesMathMarkdownChecks()
         try imageIsDownsampledBeforeEncoding()
         print("PASS: IslandCore checks (UTF-8 boundaries, SSE limits, FIFO, BOM/CRLF, concurrent atomic append, ImageIO downsampling)")
     }
@@ -112,13 +114,18 @@ actor ReceivedText {
 func checkStreaming(endpoint: URL) async throws {
     let client = HermesClient()
     let received = ReceivedText()
-    try await client.stream(configuration: HermesConfiguration(endpoint: endpoint, model: "fixture"),
+    func fixtureConfiguration(_ url: URL) -> HermesConfiguration {
+        HermesConfiguration(endpoint: url, model: "fixture", apiKey: "fixture-api",
+            accessClientID: "fixture-client", accessClientSecret: "fixture-secret",
+            extraHeaders: [.init(name: "X-Gateway-Route", value: "fixture")])
+    }
+    try await client.stream(configuration: fixtureConfiguration(endpoint),
                             messages: [ChatMessage(role: "user", text: "fixture")]) { delta in
         await received.append(delta)
     }
     try expect(await received.value == "你好🌙")
     let task = Task {
-        try await client.stream(configuration: HermesConfiguration(endpoint: endpoint.appendingPathComponent("slow"), model: "fixture"),
+        try await client.stream(configuration: fixtureConfiguration(endpoint.appendingPathComponent("slow")),
                                 messages: [ChatMessage(role: "user", text: "cancel")]) { _ in }
     }
     try await Task.sleep(for: .milliseconds(100))
@@ -127,5 +134,5 @@ func checkStreaming(endpoint: URL) async throws {
     task.cancel()
     try await expectThrowsAsync { try await task.value }
     try expect(start.duration(to: clock.now) < .seconds(1))
-    print("PASS: URLSession.bytes SSE completion and cancellation against localhost fixture")
+    print("PASS: URLSession.bytes Cloudflare/custom headers, SSE completion and cancellation against localhost fixture")
 }

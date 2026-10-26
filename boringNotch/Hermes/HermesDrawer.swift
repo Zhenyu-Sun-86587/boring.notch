@@ -149,7 +149,7 @@ struct HermesDrawer: View {
     }
 
     private func richText(_ text: String) -> some View {
-        StructuredText(markdown: text, syntaxExtensions: [.math])
+        StructuredText(text, parser: HermesMarkdownParser())
             .textual.textSelection(.enabled)
             .textual.structuredTextStyle(.gitHub)
             .textual.codeBlockStyle(HermesCodeBlockStyle())
