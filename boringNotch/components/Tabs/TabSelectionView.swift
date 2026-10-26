@@ -29,6 +29,7 @@ struct TabSelectionView: View {
         HStack(spacing: 0) {
             ForEach(tabs.filter { $0.view != .shelf || shelfEnabled }) { tab in
                     TabButton(label: tab.label, icon: tab.icon, selected: coordinator.currentView == tab.view) {
+                        HermesStore.shared.capturesNotchDrops = tab.view == .hermes
                         withAnimation(.smooth) {
                             coordinator.currentView = tab.view
                         }

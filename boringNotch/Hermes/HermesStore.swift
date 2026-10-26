@@ -19,6 +19,7 @@ final class HermesStore: ObservableObject {
     @Published private(set) var isPreparingDrop = false
     @Published private(set) var attachments: [StagedAttachment] = []
     @Published var isWide = false
+    @Published var capturesNotchDrops = false
     @Published var message: String?
     private var conversation = Conversation()
     private let client: any HermesStreaming

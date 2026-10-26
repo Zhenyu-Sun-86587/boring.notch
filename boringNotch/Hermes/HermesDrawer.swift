@@ -91,8 +91,10 @@ struct HermesDrawer: View {
         .padding(.bottom, 8)
         .overlay { if dropTarget { RoundedRectangle(cornerRadius: 12).stroke(.tint, lineWidth: 2).allowsHitTesting(false) } }
         .onDrop(of: [.fileURL, .image, .plainText], isTargeted: $dropTarget) { providers in
+            vm.dropEvent = true
             store.stage(providers); return true
         }
+        .onChange(of: dropTarget) { _, targeted in vm.dropZoneTargeting = targeted }
         .onAppear {
             store.appeared(vm.screenUUID ?? "primary")
             Task { @MainActor in
@@ -102,6 +104,7 @@ struct HermesDrawer: View {
         }
         .onDisappear {
             inputFocused = false
+            vm.dropZoneTargeting = false
             store.disappeared(vm.screenUUID ?? "primary")
         }
         .onChange(of: store.isGenerating) { _, generating in

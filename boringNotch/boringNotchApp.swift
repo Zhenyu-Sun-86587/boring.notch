@@ -238,11 +238,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard let uuid = screen.displayUUID else { return }
         
         if Defaults[.showOnAllDisplays], let viewModel = viewModels[uuid] {
+            coordinator.currentView = HermesStore.shared.capturesNotchDrops ? .hermes : .shelf
             viewModel.open()
-            coordinator.currentView = .shelf
         } else if !Defaults[.showOnAllDisplays], let windowScreen = window?.screen, screen == windowScreen {
+            coordinator.currentView = HermesStore.shared.capturesNotchDrops ? .hermes : .shelf
             vm.open()
-            coordinator.currentView = .shelf
         }
     }
 

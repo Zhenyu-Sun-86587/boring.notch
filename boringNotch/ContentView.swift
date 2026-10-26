@@ -226,7 +226,7 @@ struct ContentView: View {
 
             if isTargeted {
                 if vm.notchState == .closed {
-                    coordinator.currentView = .shelf
+                    coordinator.currentView = hermes.capturesNotchDrops ? .hermes : .shelf
                     doOpen()
                 }
                 return
@@ -512,13 +512,19 @@ struct ContentView: View {
 
     @ViewBuilder
     var dragDetector: some View {
-        if Defaults[.boringShelf] && vm.notchState == .closed {
+        if (Defaults[.boringShelf] || hermes.capturesNotchDrops) && vm.notchState == .closed {
             Color.clear
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .contentShape(Rectangle())
-        .onDrop(of: [.fileURL, .url, .utf8PlainText, .plainText, .data], isTargeted: $vm.dragDetectorTargeting) { providers in
+        .onDrop(of: [.fileURL, .image, .url, .utf8PlainText, .plainText, .data], isTargeted: $vm.dragDetectorTargeting) { providers in
             vm.dropEvent = true
-            ShelfStateViewModel.shared.load(providers)
+            if hermes.capturesNotchDrops {
+                coordinator.currentView = .hermes
+                doOpen()
+                hermes.stage(providers)
+            } else {
+                ShelfStateViewModel.shared.load(providers)
+            }
             return true
         }
         } else {
@@ -573,7 +579,7 @@ struct ContentView: View {
                         self.isHovering = false
                     }
                     
-                    if self.vm.notchState == .open && !self.vm.isBatteryPopoverActive && !SharingStateManager.shared.preventNotchClose {
+                    if self.vm.notchState == .open && !self.vm.anyDropZoneTargeting && !self.vm.isBatteryPopoverActive && !SharingStateManager.shared.preventNotchClose {
                         self.vm.close()
                     }
                 }

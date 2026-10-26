@@ -27,6 +27,8 @@ No credentials, live service addresses or note contents are committed to the rep
 
 - Hover opens the existing notch; select Hermes to type. Only the panel under the pointer can take keyboard focus.
   Leaving Hermes collapses after 350 ms; lock screen closes Hermes and cancels generation.
+- After manually selecting Hermes, dragging onto the closed notch restores Hermes and stages attachments.
+  Selecting Home or Shelf restores the original Shelf drop destination. Active drop targets prevent hover collapse.
 - Compact 640×420 / wide 920×520, clamped to the current screen. Code fences and Markdown tables widen automatically.
 - Native Textual rendering supports Markdown and `$…$` / `$$…$$` math, with a separate copy action per code block.
   No WebKit process is introduced. Raw HTML is not executed.
