@@ -137,8 +137,12 @@ struct ContentView: View {
     /// as a hover-exit and closed the notch. The compact panel's height is
     /// controlled by its own internal padding instead, which is the honest
     /// lever anyway.
+    private var workspaceIsOpen: Bool {
+        vm.notchState == .open && (coordinator.currentView == .hermes || coordinator.currentView == .clipboard)
+    }
+
     private var openNotchHeight: CGFloat? {
-        if notificationManager.activeNotification != nil && !clipboard.keyboardSessionActive { return 132 }
+        if notificationManager.activeNotification != nil && !workspaceIsOpen { return 132 }
         return (coordinator.currentView == .hermes || coordinator.currentView == .clipboard) ? vm.notchSize.height : (Defaults[.compactMode] ? nil : vm.notchSize.height)
     }
 
@@ -148,7 +152,7 @@ struct ContentView: View {
     /// header spans the full notch width.
     private var showsHeader: Bool {
         vm.notchState == .open
-            && (notificationManager.activeNotification == nil || clipboard.keyboardSessionActive)
+            && (notificationManager.activeNotification == nil || workspaceIsOpen)
     }
 
     /// The activity currently on top of the stack — what the chin has to be
@@ -592,7 +596,7 @@ struct ContentView: View {
                 VStack {
                     // An open notch with a live notification is showing the
                     // reply UI — the usual tabs can wait until it's dismissed.
-                    if let notification = notificationManager.activeNotification, !clipboard.keyboardSessionActive {
+                    if let notification = notificationManager.activeNotification, !workspaceIsOpen {
                         NotificationExpandedView(notification: notification)
                             .id(notification.id)
                     } else if coordinator.currentView == .clipboard {
