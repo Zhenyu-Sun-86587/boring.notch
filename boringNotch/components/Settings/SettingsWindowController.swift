@@ -66,6 +66,13 @@ class SettingsWindowController: NSWindowController {
         window.delegate = self
     }
     
+    func showIslandSettings() {
+        showWindow()
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: Notification.Name("ShowIslandSettings"), object: nil)
+        }
+    }
+
     func showWindow() {
         // Set app to regular mode first
         NSApp.setActivationPolicy(.regular)

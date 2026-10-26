@@ -87,6 +87,9 @@ public actor VikunjaClient: TodoServiceProviding {
             var request = request(path, version: version)
             guard var components = URLComponents(url: request.url!, resolvingAgainstBaseURL: false) else { throw IslandError.invalidResponse }
             components.queryItems = [URLQueryItem(name: "page", value: String(page)), URLQueryItem(name: "per_page", value: "100")]
+            if path == "tasks" {
+                components.queryItems?.append(URLQueryItem(name: "filter", value: configuration.excludedProjectIDs.sorted().map { "project != \($0)" }.joined(separator: " && ")))
+            }
             request.url = components.url
             let result = try await transport.execute(request).validated()
             if version == 2 {

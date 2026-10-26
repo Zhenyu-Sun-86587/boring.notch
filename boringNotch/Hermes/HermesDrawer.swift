@@ -19,11 +19,11 @@ struct HermesDrawer: View {
                         Text("输入问题，或拖入图片、代码与日志。使用 @today / @inbox 引用本地便签。")
                             .foregroundStyle(.secondary)
                         if IslandSettings.string("hermesURL").isEmpty {
-                            Button("Configure Hermes & Todo…") { SettingsWindowController.shared.showWindow() }
+                            Button("Configure Hermes & Todo…") { SettingsWindowController.shared.showIslandSettings() }
                         }
                     }
                     ForEach(Array(store.turns.enumerated()), id: \.offset) { _, turn in
-                        Text(turn.user).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                        Text(turn.prompt).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
                         richText(turn.assistant)
                     }
                     if !store.answer.isEmpty && (store.isGenerating || store.turns.last?.assistant != store.answer) {
@@ -76,6 +76,8 @@ struct HermesDrawer: View {
                     .disabled(store.answer.isEmpty || store.isGenerating)
                 Button("Clear", systemImage: "trash") { store.clear() }
                 Spacer()
+                Button("Settings", systemImage: "gear") { SettingsWindowController.shared.showIslandSettings() }
+                    .labelStyle(.iconOnly)
                 Button(store.isWide ? "Compact" : "Wide", systemImage: "arrow.left.and.right") { store.isWide.toggle() }
             }
             .font(.caption).buttonStyle(.plain).foregroundStyle(.secondary)

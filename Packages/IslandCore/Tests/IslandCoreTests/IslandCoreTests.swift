@@ -79,6 +79,8 @@ func todoPaginationDedupAndExclusion() async throws {
     try expect(tasks.count == 1)
     try expect(tasks[0].due != nil)
     try expect(await transport.requests.count == 3)
+    let requestURL = await transport.requests[1].url!
+    try expect(URLComponents(url: requestURL, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "filter" })?.value == "project != 3")
 }
 
 func todoV2UsesConditionalPatch() async throws {

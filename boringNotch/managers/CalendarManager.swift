@@ -57,7 +57,10 @@ final class CalendarManager: ObservableObject {
     func updateSelectedCalendars() {
         switch Defaults[.calendarSelectionState] {
         case .all: selectedCalendarIDs = Set(allCalendars.map(\.id))
-        case .selected(let ids): selectedCalendarIDs = ids.intersection(Set(allCalendars.map(\.id)))
+        case .selected(let ids):
+            // Old EventKit selection identifiers are unrelated to the new provider.
+            selectedCalendarIDs = !ids.isEmpty && !ids.contains(where: { $0.hasPrefix("vikunja:") })
+                ? Set(allCalendars.map(\.id)) : ids.intersection(Set(allCalendars.map(\.id)))
         }
     }
     func getCalendarSelected(_ calendar: CalendarModel) -> Bool { selectedCalendarIDs.contains(calendar.id) }

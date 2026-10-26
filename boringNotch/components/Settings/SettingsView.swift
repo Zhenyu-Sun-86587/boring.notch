@@ -128,6 +128,9 @@ struct SettingsView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("AccentColorChanged"))) { _ in
             accentColorUpdateTrigger = UUID()
         }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ShowIslandSettings"))) { _ in
+            selectedTab = "Hermes"
+        }
     }
 }
 

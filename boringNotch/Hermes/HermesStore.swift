@@ -26,16 +26,20 @@ final class HermesStore: ObservableObject {
     private var expiration: Task<Void, Never>?
     private var flush: Task<Void, Never>?
     private var pending = ""
+    private var receivedBytes = 0
+    private var dropID = UUID()
     private var visible: Set<String> = []
     private var generationID = UUID()
     init(client: any HermesStreaming = HermesClient()) { self.client = client }
 
     func appeared(_ id: String) {
-        visible.insert(id); expiration?.cancel(); expiration = nil
+        guard visible.insert(id).inserted else { return }
+        expiration?.cancel(); expiration = nil
         SurfaceAccess.shared.acquire()
     }
     func disappeared(_ id: String) {
-        visible.remove(id); SurfaceAccess.shared.release()
+        guard visible.remove(id) != nil else { return }
+        SurfaceAccess.shared.release()
         guard visible.isEmpty else { return }
         stop()
         expiration?.cancel()
@@ -50,6 +54,7 @@ final class HermesStore: ObservableObject {
         flushPending(); isGenerating = false
     }
     func clear() {
+        dropID = UUID()
         stop(); conversation.clear(); turns = []; answer = ""; input = ""; isWide = false; message = nil
         for attachment in attachments { deleteTemporary(attachment) }
         attachments = []
@@ -66,10 +71,15 @@ final class HermesStore: ObservableObject {
         let remaining = max(0, 6 - attachments.count)
         guard remaining > 0 else { message = "最多暂存 6 个附件。"; return }
         isPreparingDrop = true
+        let id = UUID(); dropID = id
         Task {
             defer { isPreparingDrop = false }
             do {
                 let staged = try await ShelfDropService.stagingFiles(from: Array(providers.prefix(remaining)))
+                guard id == dropID else {
+                    for item in staged where item.temporary { try? FileManager.default.removeItem(at: item.url) }
+                    return
+                }
                 attachments.append(contentsOf: staged.map { StagedAttachment(url: $0.url, temporary: $0.temporary) })
             } catch { message = error.localizedDescription }
         }
@@ -92,14 +102,14 @@ final class HermesStore: ObservableObject {
                 guard generationID == id else { return }
                 let userText = prompt + context
                 let messages = conversation.messages + [ChatMessage(role: "user", parts: [.text(userText)] + parts)]
-                answer = ""; pending = ""; started = true
+                answer = ""; pending = ""; receivedBytes = 0; started = true
                 try await client.stream(configuration: configuration, messages: messages) { [weak self] delta in
                     try await self?.receive(delta, id: id)
                 }
                 try Task.checkCancellation()
                 guard generationID == id else { return }
                 flushPending()
-                conversation.append(user: userText, assistant: answer); turns = conversation.turns
+                conversation.append(user: userText, assistant: answer, displayPrompt: prompt); turns = conversation.turns
                 input = ""
                 for attachment in attachments { deleteTemporary(attachment) }
                 attachments = []
@@ -116,7 +126,8 @@ final class HermesStore: ObservableObject {
     }
     private func receive(_ delta: String, id: UUID) throws {
         guard id == generationID else { throw CancellationError() }
-        guard answer.utf8.count + pending.utf8.count + delta.utf8.count <= 131_072 else { throw IslandError.limit("回答超过 128 KB，已停止接收。") }
+        receivedBytes += delta.utf8.count
+        guard receivedBytes <= 131_072 else { throw IslandError.limit("回答超过 128 KB，已停止接收。") }
         pending += delta
         if flush == nil {
             flush = Task { [weak self] in

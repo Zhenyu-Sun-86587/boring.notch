@@ -79,3 +79,11 @@ jobs:
           name: Hermes-build-diagnostics-${{ github.sha }}
           path: build/xcodebuild.log
           if-no-files-found: ignore
+          # Keep the resolved dependency graph with diagnostics for reproducibility.
+      - name: Upload resolved package versions
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Hermes-resolved-packages-${{ github.sha }}
+          path: boringNotch.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+          if-no-files-found: ignore

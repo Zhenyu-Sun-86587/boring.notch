@@ -141,11 +141,11 @@ public struct HermesClient: HermesStreaming {
 }
 
 public struct Conversation: Sendable {
-    public struct Turn: Sendable { public let user: String; public let assistant: String }
+    public struct Turn: Sendable { public let user: String; public let assistant: String; public let prompt: String }
     public private(set) var turns: [Turn] = []
     public init() {}
-    public mutating func append(user: String, assistant: String) {
-        turns.append(Turn(user: user, assistant: assistant))
+    public mutating func append(user: String, assistant: String, displayPrompt: String? = nil) {
+        turns.append(Turn(user: user, assistant: assistant, prompt: displayPrompt ?? user))
         while turns.count > 8 || turns.reduce(0, { $0 + $1.user.utf8.count + $1.assistant.utf8.count }) > 262_144 {
             turns.removeFirst()
         }
