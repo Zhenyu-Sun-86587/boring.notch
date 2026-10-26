@@ -147,6 +147,16 @@ extension NSScreen { static func screen(withUUID _: String) -> NSScreen? { main 
         }
         // Unlike a coordinate-only assertion, these inspect the composed shell. An independent
         // page fade, ghost background or stale shadow can have perfect NSView bounds and fail here.
+        if shell.height > 12 {
+            // The header's central black notch can conceal a displaced shell background.
+            // Check both shoulders as well as the center, immediately below the top edge.
+            for fraction in [CGFloat(0.25), 0.5, 0.75] {
+                for inset in [CGFloat(1), 4] {
+                    try requireWorkspace(alpha(shell.minX + shell.width * fraction, top + inset) >= 0.98,
+                        "Shell exposed a top gap during \(phase): fraction=\(fraction), inset=\(inset), size=\(shell.size)")
+                }
+            }
+        }
         if shell.height > 80 {
             for fraction in [CGFloat(0.25), 0.5, 0.75] {
                 try requireWorkspace(alpha(shell.midX, top + shell.height * fraction) >= 0.98,

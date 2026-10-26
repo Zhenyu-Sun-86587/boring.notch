@@ -1,8 +1,23 @@
 # Island geometry diagnostics
 
-This build adds opt-in diagnostics for the reported gap above the notch when a tall
-Hermes/Clipboard page changes to Home/Shelf or closes. It does not change layout,
-animation, window positioning, or keyboard handoff behavior.
+This build includes opt-in diagnostics for the reported gap above the notch when a
+tall Hermes/Clipboard page changes to Home/Shelf or closes. The recorder does not
+change layout, animation, window positioning, or keyboard handoff behavior.
+
+The user reproduced the gap on `dc23f2c` with tracing enabled. Across both high-to-Shelf
+transitions the window, host and bridge anchor stayed at the screen top; the
+WindowServer transform did not change. The user confirmed that desktop pixels,
+rather than only lowered header content, were visible. That evidence narrows the
+failure to rendering below the measured shell geometry; it does not establish a
+window-origin or frame-size fault.
+
+The next change places the content, clip and black background in one
+`geometryGroup()`. Apple's [geometryGroup documentation](https://developer.apple.com/documentation/swiftui/view/geometrygroup())
+explains how a geometry boundary resolves parent position/size changes before
+passing them to independently inserted drawing leaves. This is a focused rendering
+change, with no offset or timing compensation. It still requires validation against
+the user's actual reproducer; passing fixtures alone does not prove the reported
+gap is fixed.
 
 Start a fresh app process with `--island-geometry-trace`, for example:
 
@@ -35,7 +50,8 @@ No screenshots, text contents, titles, URLs, clipboard values, input events, or
 session/owner identifiers are collected. The optional WindowServer reader is resolved
 only after tracing has been enabled, and reads only the notch window being logged.
 
-Independent fixture checks have not reproduced the reported gap, including a short
+Independent fixture checks did not reproduce the reported gap, including a short
 visible run with the production window class, bridge, keyboard handoff and private
-space registration. Those checks do not establish that the real application's issue
-is fixed. The next useful evidence is a trace from the user's actual trigger path.
+space registration. The live application trace above supplies evidence those
+fixtures could not. Pixel checks now include both shoulders immediately below the
+top edge, since the header's central black notch can conceal a displaced background.
