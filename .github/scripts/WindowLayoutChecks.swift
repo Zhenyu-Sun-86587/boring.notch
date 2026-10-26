@@ -32,6 +32,7 @@ private struct LayoutCheckFailure: Error, CustomStringConvertible {
     var firstResponderClears = 0
     var fixtureVisible = false
     private var fixtureKey = false
+    func fixtureLosesKey() { fixtureKey = false }
     var isActuallyVisible: Bool { super.isVisible }
     override var screen: NSScreen? { NSScreen.main }
     override var isVisible: Bool { fixtureVisible }
@@ -128,8 +129,9 @@ extension NSScreen {
     first.contentView = container
     let otherContainer = NSView(frame: second.contentView!.bounds)
     second.contentView = otherContainer
-    let anchor = IslandWindowBridge.Anchor(frame: .zero)
+    let anchor = IslandWindowBridge.Anchor(frame: NSRect(x: 0, y: 0, width: 80, height: 80))
     container.addSubview(anchor)
+    try check(anchor.hitTest(NSPoint(x: 30, y: 30)) == nil, "Window geometry bridge intercepted a content click")
     let before = first.frameWrites
     for index in 0..<100 {
         anchor.receive(size: CGSize(width: 500 + index, height: 220 + index),
@@ -184,6 +186,23 @@ extension NSScreen {
     try check(window.focusRequests == 0, "receive() synchronously requested focus")
     try await pump([window])
     try check(window.allowsIslandKeyboard && window.focusRequests == 1, "Keyboard session did not acquire fixture focus")
+    window.fixtureLosesKey()
+    for _ in 0..<30 {
+        old.receive(size: CGSize(width: 640, height: 440), wantsKeyboard: true, permitsKeyboardWithoutHover: true)
+    }
+    try await pump([window])
+    try check(window.focusRequests == 1 && !window.isKeyWindow,
+              "A layout/content refresh stole focus back from Settings or another application")
+    old.receive(size: CGSize(width: 640, height: 440), wantsKeyboard: true,
+                permitsKeyboardWithoutHover: true, keyboardActivation: "new-explicit-entry")
+    try await pump([window])
+    try check(window.focusRequests == 2 && window.isKeyWindow,
+              "A new explicit tab/session entry failed to acquire keyboard focus")
+    window.fixtureLosesKey()
+    IslandWindowBridge.requestKeyboardFocus(in: window)
+    try await pump([window])
+    try check(window.focusRequests == 3 && window.isKeyWindow,
+              "The global open-notch shortcut did not deliver its explicit window focus request")
     let previousOwner = window.islandKeyboardOwner
     new.receive(size: CGSize(width: 640, height: 440), wantsKeyboard: true, permitsKeyboardWithoutHover: true)
     old.invalidate()
@@ -197,7 +216,7 @@ extension NSScreen {
               "Locked window retained keyboard ownership")
     try check(window.resignRequests == 0 && window.orderOutRequests == 1 && window.orderingRequests == 0,
               "Focus was not released through real ordering, or a notification was called directly")
-    print("PASS production bridge: keyboard ownership, stale release and screen lock (focus intercepted)")
+    print("PASS production bridge: one key admission per entry, no refresh focus stealing, ownership, stale release and screen lock (focus intercepted)")
 }
 
 @MainActor private func handoffChecks() async throws {

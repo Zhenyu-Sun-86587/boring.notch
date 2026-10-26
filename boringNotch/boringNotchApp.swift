@@ -329,6 +329,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     var didOpen = false
                     await MainActor.run {
                         didOpen = viewModel.open()
+                        if didOpen && self.coordinator.currentView == .hermes {
+                            let panel = Defaults[.displayMode] == .allDisplays
+                                ? viewModel.screenUUID.flatMap { self.windowManager.windows[$0] }
+                                : self.windowManager.primaryWindow
+                            if let panel { IslandWindowBridge.requestKeyboardFocus(in: panel) }
+                        }
                     }
                     guard didOpen else { return }
 

@@ -10,6 +10,7 @@ struct HermesDrawer: View {
     @FocusState private var inputFocused: Bool
     @State private var dropTarget = false
     @State private var showingWidthControls = false
+    @State private var drawerVisible = false
 
     var body: some View {
         VStack(spacing: 8) {
@@ -110,6 +111,9 @@ struct HermesDrawer: View {
             .font(.caption).buttonStyle(.plain).foregroundStyle(.secondary)
         }
         .padding(.bottom, 8)
+        .background(HermesInputFocusObserver(enabled: shouldFocusInput, isCurrent: { shouldFocusInput }) { focused in
+            if inputFocused != focused { inputFocused = focused }
+        })
         .overlay { if dropTarget { RoundedRectangle(cornerRadius: 12).stroke(.tint, lineWidth: 2).allowsHitTesting(false) } }
         .onDrop(of: [.fileURL, .image, .plainText], isTargeted: $dropTarget) { providers in
             vm.dropInteraction.dropEvent = true
@@ -120,21 +124,21 @@ struct HermesDrawer: View {
         .onChange(of: showingWidthControls) { _, showing in vm.isPopoverActive = showing }
         .onChange(of: surface.hasFile) { _, hasFile in if !hasFile { store.includesNote = false } }
         .onAppear {
+            drawerVisible = true
             store.appeared(vm.screenUUID ?? "primary")
-            Task { @MainActor in
-                await Task.yield()
-                inputFocused = true
-            }
         }
         .onDisappear {
+            drawerVisible = false
             inputFocused = false
             vm.dropInteraction.dropZoneTargeting = false
             store.disappeared(vm.screenUUID ?? "primary")
         }
-        .onChange(of: store.isGenerating) { _, generating in
-            if !generating { inputFocused = true }
-        }
         .onReceive(NotificationCenter.default.publisher(for: .islandLocked)) { _ in inputFocused = false; store.stop() }
+    }
+
+    private var shouldFocusInput: Bool {
+        drawerVisible && vm.notchState == .open && BoringViewCoordinator.shared.currentView == .hermes
+            && !store.isGenerating && !vm.isPopoverActive && !showingWidthControls
     }
 
     private func attachmentChip(name: String, icon: String, removeLabel: String, remove: @escaping () -> Void) -> some View {

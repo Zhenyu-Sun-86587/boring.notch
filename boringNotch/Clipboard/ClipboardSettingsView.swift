@@ -6,12 +6,12 @@ struct ClipboardSettingsView: View {
     var body: some View {
         Form {
             Section {
-                Toggle("剪贴板历史", isOn: $store.enabled)
+                Toggle("剪贴板历史", isOn: Binding(get: { store.enabled }, set: { store.setEnabledByUser($0) }))
                 if store.enabled && store.needsReadAccess {
-                    Button("允许读取剪贴板") { store.requestReadAccess() }
+                    Button("允许读取剪贴板") { store.requestPermissions() }.disabled(store.requestingPermissions)
                 }
                 if store.enabled && store.readDenied {
-                    Button("打开剪贴板权限设置") { store.openReadSettings() }
+                    Button("打开剪贴板权限设置") { store.requestPermissions() }.disabled(store.requestingPermissions)
                 }
             }
             Section("保留记录") {

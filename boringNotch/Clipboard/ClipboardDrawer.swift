@@ -26,17 +26,17 @@ struct ClipboardDrawer: View {
 
             if !store.enabled {
                 HStack {
-                    Button("启用剪贴板历史") { store.requestReadAccess() }
+                    Button("启用剪贴板历史") { store.requestPermissions() }.disabled(store.requestingPermissions)
                     Spacer()
                 }.font(.caption)
             } else if store.readDenied {
                 HStack {
-                    Button("允许剪贴板访问") { store.openReadSettings() }
+                    Button("允许剪贴板访问") { store.requestPermissions() }.disabled(store.requestingPermissions)
                     Spacer()
                 }.font(.caption)
             } else if store.needsReadAccess {
                 HStack {
-                    Button("允许读取剪贴板") { store.requestReadAccess() }
+                    Button("允许读取剪贴板") { store.requestPermissions() }.disabled(store.requestingPermissions)
                     Spacer()
                 }.font(.caption)
             }

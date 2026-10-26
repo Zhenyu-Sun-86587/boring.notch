@@ -18,9 +18,16 @@ enum HermesLayout {
 /// Submit window changes after SwiftUI reconciliation, rather than resizing
 /// the NSHostingView's own window from inside updateNSView/viewDidMoveToWindow.
 struct IslandWindowBridge: NSViewRepresentable {
+    private static let keyboardRequest = Notification.Name("IslandKeyboardFocusRequested")
+
+    @MainActor static func requestKeyboardFocus(in window: NSWindow) {
+        NotificationCenter.default.post(name: keyboardRequest, object: window)
+    }
+
     let size: CGSize
     let wantsKeyboard: Bool
     var permitsKeyboardWithoutHover = false
+    var keyboardActivation: String?
 
     @MainActor
     final class Anchor: NSView {
@@ -28,22 +35,51 @@ struct IslandWindowBridge: NSViewRepresentable {
             let size: CGSize
             let wantsKeyboard: Bool
             let permitsKeyboardWithoutHover: Bool
+            let keyboardActivation: String?
         }
         private let ownerID = UUID()
         private var request: Request?
         private var generation: UInt = 0
         private var pending: DispatchWorkItem?
         private weak var previousWindow: NSWindow?
+        private var attemptedKeyboardActivation = false
+        private var explicitKeyboardEntry = false
+        private var explicitKeyboardDeadline: TimeInterval = 0
+        private var keyboardObserver: NSObjectProtocol?
 
-        func receive(size: CGSize, wantsKeyboard: Bool, permitsKeyboardWithoutHover: Bool) {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        func receive(size: CGSize, wantsKeyboard: Bool, permitsKeyboardWithoutHover: Bool,
+                     keyboardActivation: String? = nil) {
+            if !wantsKeyboard, request?.wantsKeyboard == true { explicitKeyboardEntry = false }
+            if !wantsKeyboard || request?.wantsKeyboard != true
+                || request?.keyboardActivation != keyboardActivation {
+                attemptedKeyboardActivation = false
+            }
             request = Request(size: size, wantsKeyboard: wantsKeyboard,
-                              permitsKeyboardWithoutHover: permitsKeyboardWithoutHover)
+                              permitsKeyboardWithoutHover: permitsKeyboardWithoutHover,
+                              keyboardActivation: keyboardActivation)
             schedule()
         }
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             if let previousWindow, previousWindow !== window { releaseKeyboard(in: previousWindow) }
+            if let keyboardObserver { NotificationCenter.default.removeObserver(keyboardObserver) }
+            keyboardObserver = nil
+            explicitKeyboardEntry = false
+            if let window {
+                keyboardObserver = NotificationCenter.default.addObserver(forName: IslandWindowBridge.keyboardRequest,
+                    object: window, queue: .main) { [weak self, weak window] _ in
+                    MainActor.assumeIsolated {
+                        guard let self, let window, self.window === window else { return }
+                        self.explicitKeyboardEntry = true
+                        self.explicitKeyboardDeadline = ProcessInfo.processInfo.systemUptime + 2
+                        self.attemptedKeyboardActivation = false
+                        self.schedule()
+                    }
+                }
+            }
             previousWindow = window
             schedule()
         }
@@ -85,12 +121,19 @@ struct IslandWindowBridge: NSViewRepresentable {
             }
             guard let panel = window as? BoringNotchSkyLightWindow,
                   !panel.isIslandKeyboardHandoffActive else { return }
-            let shouldFocus = request.wantsKeyboard && !panel.isIslandScreenLocked
-                && (request.permitsKeyboardWithoutHover || frame.contains(NSEvent.mouseLocation))
-            if shouldFocus {
-                panel.islandKeyboardOwner = ownerID
-                panel.allowsIslandKeyboard = true
-                if !panel.isKeyWindow { panel.makeKey() }
+            if request.wantsKeyboard && !panel.isIslandScreenLocked && panel.isVisible {
+                // Admission happens once per explicit opening/tab/session. A
+                // streamed answer or layout update must not steal key status
+                // back from Settings, a permission alert or another app.
+                if !attemptedKeyboardActivation
+                    && ((explicitKeyboardEntry && ProcessInfo.processInfo.systemUptime < explicitKeyboardDeadline)
+                        || request.permitsKeyboardWithoutHover || frame.contains(NSEvent.mouseLocation)) {
+                    attemptedKeyboardActivation = true
+                    explicitKeyboardEntry = false
+                    panel.islandKeyboardOwner = ownerID
+                    panel.allowsIslandKeyboard = true
+                    if !panel.isKeyWindow { panel.makeKey() }
+                }
             } else if panel.islandKeyboardOwner == ownerID || panel.islandKeyboardOwner == nil {
                 let previouslyOwnedFocus = panel.allowsIslandKeyboard
                 panel.islandKeyboardOwner = nil
@@ -104,6 +147,9 @@ struct IslandWindowBridge: NSViewRepresentable {
             pending?.cancel()
             pending = nil
             request = nil
+            explicitKeyboardEntry = false
+            if let keyboardObserver { NotificationCenter.default.removeObserver(keyboardObserver) }
+            keyboardObserver = nil
             if let window = window ?? previousWindow { releaseKeyboard(in: window) }
             previousWindow = nil
         }
@@ -123,7 +169,8 @@ struct IslandWindowBridge: NSViewRepresentable {
     func makeNSView(context: Context) -> Anchor { Anchor() }
     func updateNSView(_ view: Anchor, context: Context) {
         view.receive(size: size, wantsKeyboard: wantsKeyboard,
-                     permitsKeyboardWithoutHover: permitsKeyboardWithoutHover)
+                     permitsKeyboardWithoutHover: permitsKeyboardWithoutHover,
+                     keyboardActivation: keyboardActivation)
     }
     static func dismantleNSView(_ view: Anchor, coordinator: ()) { view.invalidate() }
 }

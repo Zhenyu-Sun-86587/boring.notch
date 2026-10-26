@@ -190,7 +190,7 @@ final class ClipboardPresentation: ObservableObject {
                 ClipboardStore.shared.finishPaste(sessionID: sessionID)
                 self.finishPasteAction(actionID)
             }
-            let trusted = await XPCHelperClient.shared.isAccessibilityAuthorized()
+            let trusted = await ClipboardPermissionController.shared.ensurePasteAccess()
             guard !Task.isCancelled, self.pasteActionID == actionID,
                   self.windowManager?.isScreenLocked == false else { return }
             guard trusted else {

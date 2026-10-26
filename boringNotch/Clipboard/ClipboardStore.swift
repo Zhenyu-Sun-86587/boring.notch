@@ -29,10 +29,14 @@ final class ClipboardStore: ObservableObject {
     @Published private(set) var pasting = false
     @Published private(set) var needsReadAccess = false
     @Published private(set) var readDenied = false
-    @Published var enabled: Bool {
+    @Published private(set) var requestingPermissions = false
+    @Published private(set) var enabled: Bool {
         didSet {
             UserDefaults.standard.set(enabled, forKey: "island.clipboardEnabled")
-            if enabled { restartMonitor() } else { timer?.invalidate(); timer = nil }
+            if enabled { restartMonitor() } else {
+                timer?.invalidate(); timer = nil
+                cancelPermissionRequest()
+            }
         }
     }
     @Published var retentionDays: Int {
@@ -55,6 +59,8 @@ final class ClipboardStore: ObservableObject {
     private var locked = false
     private var loading = false
     private var capturing = false
+    private var permissionTask: Task<Void, Never>?
+    private var permissionEpoch = UUID()
     private var monitorTick = 0
     private var legacyReadAllowed = false
     private var sessionTarget: NSRunningApplication?
@@ -145,6 +151,7 @@ final class ClipboardStore: ObservableObject {
     func setScreenLocked(_ value: Bool) {
         locked = value
         if value {
+            cancelPermissionRequest()
             endSession(); timer?.invalidate(); timer = nil
         } else if enabled { changeCount = pasteboard.changeCount; restartMonitor() }
     }
@@ -153,18 +160,66 @@ final class ClipboardStore: ObservableObject {
     func finishPaste(sessionID: String) {
         if sessionID == sessionGeneration.uuidString { pasting = false }
     }
-    func requestReadAccess() {
-        enabled = true
-        needsReadAccess = false
-        readDenied = false
-        // A user action triggers exactly one attempt; monitoring never repeatedly requests permission.
-        changeCount = pasteboard.changeCount - 1
-        capture(allowPrompt: true)
+    func setEnabledByUser(_ value: Bool) {
+        enabled = value
+        if value { requestPermissions() }
     }
-    func openReadSettings() {
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Pasteboard") {
-            NSWorkspace.shared.open(url)
+    func requestReadAccess() { requestPermissions() }
+    func requestPermissions() {
+        guard !locked, permissionTask == nil else { return }
+        if !enabled { enabled = true }
+        let requestEpoch = permissionEpoch
+        requestingPermissions = true
+        permissionTask = Task { @MainActor in
+            defer {
+                if self.permissionEpoch == requestEpoch {
+                    self.requestingPermissions = false
+                    self.permissionTask = nil
+                }
+            }
+            await ClipboardPermissionController.shared.requestOnEnable(readState: { [weak self] in
+                self?.readPermissionState ?? .unavailable
+            }, requestRead: { [weak self] in
+                self?.performExplicitReadRequest() ?? .unavailable
+            })
+            guard self.permissionEpoch == requestEpoch, self.enabled, !self.locked, !Task.isCancelled else { return }
+            self.refreshReadPermissionState()
         }
+    }
+    private func cancelPermissionRequest() {
+        permissionEpoch = UUID()
+        permissionTask?.cancel(); permissionTask = nil
+        requestingPermissions = false
+        ClipboardPermissionController.shared.cancelRequests()
+    }
+    private var readPermissionState: ClipboardPermissionPolicy.State {
+        switch pasteboard.accessBehavior {
+        case .alwaysAllow: return .authorized
+        case .alwaysDeny: return .denied
+        case .ask: return .ask
+        case .default: return legacyReadAllowed ? .authorized : .undetermined
+        @unknown default: return .unavailable
+        }
+    }
+    private func refreshReadPermissionState() {
+        let state = readPermissionState
+        readDenied = state == .denied
+        needsReadAccess = state == .ask || state == .undetermined
+    }
+    /// A permission probe is separate from capture, so an in-flight history write cannot drop
+    /// a user's request. Probe bytes are discarded and never imported into history here.
+    private func performExplicitReadRequest() -> ClipboardPermissionPolicy.State {
+        guard enabled, !locked else { return .unavailable }
+        let didRead = autoreleasepool {
+            if let item = pasteboard.pasteboardItems?.first,
+               let type = item.types.first(where: { supportedTypes.contains($0.rawValue) }) {
+                return item.data(forType: type) != nil
+            }
+            return pasteboard.data(forType: .string) != nil
+        }
+        if pasteboard.accessBehavior == .default && didRead { legacyReadAllowed = true }
+        refreshReadPermissionState()
+        return readPermissionState
     }
     private func restartMonitor() {
         timer?.invalidate(); timer = nil

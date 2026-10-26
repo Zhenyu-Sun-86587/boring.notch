@@ -101,6 +101,8 @@ func expectThrowsAsync<T>(_ body: () async throws -> T) async throws {
         try clipboardVisibilityChecks()
         try hermesHeaderConfigurationChecks()
         try runHermesMathMarkdownChecks()
+        try hermesInputFocusChecks()
+        try runClipboardPermissionChecks()
         try imageIsDownsampledBeforeEncoding()
         print("PASS: IslandCore checks (UTF-8 boundaries, SSE limits, FIFO, BOM/CRLF, concurrent atomic append, ImageIO downsampling)")
     }
