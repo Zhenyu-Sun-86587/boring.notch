@@ -24,6 +24,7 @@ struct EventModel: Equatable, Identifiable {
     let timeZone: TimeZone?
     let hasRecurrenceRules: Bool
     let priority: Priority?
+    var isUnscheduled: Bool = false
 }
 
 enum AttendanceStatus: Comparable {
@@ -84,6 +85,7 @@ extension EventModel {
 
     func calendarAppURL() -> URL? {
 
+        if id.hasPrefix("vikunja:") { return url }
         guard let id = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else {
             return nil
         }

@@ -53,3 +53,10 @@ build/
 *.xcarchive
 *.dSYM
 
+# Python verification artifacts
+__pycache__/
+*.pyc
+
+# Keep the shared scheme used by the certificate-free build.
+!boringNotch.xcodeproj/xcshareddata/xcschemes/boringNotch.xcscheme
+

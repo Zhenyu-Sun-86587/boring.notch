@@ -33,6 +33,8 @@ extension SkyLightOperator {
 
 class BoringNotchSkyLightWindow: NSPanel {
     private var isSkyLightEnabled: Bool = false
+    var allowsIslandKeyboard = false
+    var isIslandScreenLocked = false
     
     override init(
         contentRect: NSRect,
@@ -109,6 +111,6 @@ class BoringNotchSkyLightWindow: NSPanel {
     
     private var observers: Set<AnyCancellable> = []
     
-    override var canBecomeKey: Bool { false }
+    override var canBecomeKey: Bool { allowsIslandKeyboard && !isIslandScreenLocked }
     override var canBecomeMain: Bool { false }
 }

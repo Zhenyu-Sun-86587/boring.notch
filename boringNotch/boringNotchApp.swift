@@ -22,7 +22,7 @@ struct DynamicNotchApp: App {
 
     init() {
         updaterController = SPUStandardUpdaterController(
-            startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+            startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil)
 
         // Initialize the settings window controller with the updater controller
         SettingsWindowController.shared.setUpdaterController(updaterController)
@@ -91,6 +91,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     func onScreenLocked(_ notification: Notification) {
         isScreenLocked = true
+        NotificationCenter.default.post(name: .islandLocked, object: nil)
+        for panel in windows.values.compactMap({ $0 as? BoringNotchSkyLightWindow }) {
+            panel.isIslandScreenLocked = true; panel.allowsIslandKeyboard = false
+            if panel.isKeyWindow { panel.resignKey() }
+        }
+        if let panel = window as? BoringNotchSkyLightWindow {
+            panel.isIslandScreenLocked = true; panel.allowsIslandKeyboard = false
+            if panel.isKeyWindow { panel.resignKey() }
+        }
+        if coordinator.currentView == .hermes {
+            vm.close()
+            for model in viewModels.values { model.close() }
+        }
         if !Defaults[.showOnLockScreen] {
             cleanupWindows()
         } else {
@@ -101,6 +114,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     func onScreenUnlocked(_ notification: Notification) {
         isScreenLocked = false
+        (window as? BoringNotchSkyLightWindow)?.isIslandScreenLocked = false
+        for panel in windows.values.compactMap({ $0 as? BoringNotchSkyLightWindow }) { panel.isIslandScreenLocked = false }
         if !Defaults[.showOnLockScreen] {
             adjustWindowPosition(changeAlpha: true)
         } else {
@@ -237,6 +252,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         let window = BoringNotchSkyLightWindow(contentRect: rect, styleMask: styleMask, backing: .buffered, defer: false)
         
+        window.isIslandScreenLocked = isScreenLocked
         // Enable SkyLight only when screen is locked
         if isScreenLocked {
             window.enableSkyLight()

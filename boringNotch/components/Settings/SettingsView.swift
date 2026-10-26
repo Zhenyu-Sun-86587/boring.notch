@@ -7,7 +7,6 @@
 
 import AVFoundation
 import Defaults
-import EventKit
 import KeyboardShortcuts
 import LaunchAtLogin
 import Sparkle
@@ -35,6 +34,9 @@ struct SettingsView: View {
                 }
                 NavigationLink(value: "Media") {
                     Label("Media", systemImage: "play.laptopcomputer")
+                }
+                NavigationLink(value: "Hermes") {
+                    Label("Hermes & Todo", systemImage: "sparkles")
                 }
                 NavigationLink(value: "Calendar") {
                     Label("Calendar", systemImage: "calendar")
@@ -77,6 +79,8 @@ struct SettingsView: View {
                     Appearance()
                 case "Media":
                     Media()
+                case "Hermes":
+                    IslandSettingsView()
                 case "Calendar":
                     CalendarSettings()
                 case "HUD":
@@ -731,85 +735,24 @@ struct CalendarSettings: View {
             Defaults.Toggle(key: .showFullEventTitles) {
                 Text("Always show full event titles")
             }
-            Section(header: Text("Calendars")) {
-                if calendarManager.calendarAuthorizationStatus != .fullAccess {
-                    Text("Calendar access is denied. Please enable it in System Settings.")
-                        .foregroundColor(.red)
-                        .multilineTextAlignment(.center)
-                        .padding()
-                    Button("Open Calendar Settings") {
-                        if let settingsURL = URL(
-                            string:
-                                "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars"
-                        ) {
-                            NSWorkspace.shared.open(settingsURL)
-                        }
-                    }
-                } else {
-                    List {
-                        ForEach(calendarManager.eventCalendars, id: \.id) { calendar in
-                            Toggle(
-                                isOn: Binding(
-                                    get: { calendarManager.getCalendarSelected(calendar) },
-                                    set: { isSelected in
-                                        Task {
-                                            await calendarManager.setCalendarSelected(
-                                                calendar, isSelected: isSelected)
-                                        }
-                                    }
-                                )
-                            ) {
-                                Text(calendar.title)
-                            }
-                            .accentColor(lighterColor(from: calendar.color))
-                            .disabled(!showCalendar)
-                        }
-                    }
+            Section("Vikunja projects") {
+                if let error = calendarManager.errorMessage { Text(error).foregroundStyle(.secondary) }
+                ForEach(calendarManager.reminderLists, id: \.id) { calendar in
+                    Toggle(calendar.title, isOn: Binding(
+                        get: { calendarManager.getCalendarSelected(calendar) },
+                        set: { selected in Task { await calendarManager.setCalendarSelected(calendar, isSelected: selected) } }
+                    ))
                 }
-            }
-            Section(header: Text("Reminders")) {
-                if calendarManager.reminderAuthorizationStatus != .fullAccess {
-                    Text("Reminder access is denied. Please enable it in System Settings.")
-                        .foregroundColor(.red)
-                        .multilineTextAlignment(.center)
-                        .padding()
-                    Button("Open Reminder Settings") {
-                        if let settingsURL = URL(
-                            string:
-                                "x-apple.systempreferences:com.apple.preference.security?Privacy_Reminders"
-                        ) {
-                            NSWorkspace.shared.open(settingsURL)
-                        }
-                    }
-                } else {
-                    List {
-                        ForEach(calendarManager.reminderLists, id: \.id) { calendar in
-                            Toggle(
-                                isOn: Binding(
-                                    get: { calendarManager.getCalendarSelected(calendar) },
-                                    set: { isSelected in
-                                        Task {
-                                            await calendarManager.setCalendarSelected(
-                                                calendar, isSelected: isSelected)
-                                        }
-                                    }
-                                )
-                            ) {
-                                Text(calendar.title)
-                            }
-                            .accentColor(lighterColor(from: calendar.color))
-                            .disabled(!showCalendar)
-                        }
-                    }
-                }
+                Button("Refresh projects") { Task { await calendarManager.refresh() } }
+                Text("Configure the service under Hermes & Todo. Apple Calendar and Reminders access is not required.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
         .accentColor(.effectiveAccent)
         .navigationTitle("Calendar")
         .onAppear {
             Task {
-                await calendarManager.checkCalendarAuthorization()
-                await calendarManager.checkReminderAuthorization()
+                await calendarManager.refresh()
             }
         }
     }

@@ -31,6 +31,8 @@ struct ContentView: View {
 
     @State private var haptics: Bool = false
 
+    @ObservedObject private var hermes = HermesStore.shared
+
     @Namespace var albumArtNamespace
 
     @Default(.useMusicVisualizer) var useMusicVisualizer
@@ -203,7 +205,12 @@ struct ContentView: View {
             }
         }
         .padding(.bottom, 8)
-        .frame(maxWidth: windowSize.width, maxHeight: windowSize.height, alignment: .top)
+        .frame(maxWidth: islandWindowSize.width, maxHeight: islandWindowSize.height, alignment: .top)
+        .background(IslandWindowBridge(size: islandWindowSize,
+                                      wantsKeyboard: vm.notchState == .open && coordinator.currentView == .hermes))
+        .onChange(of: coordinator.currentView) { updateIslandSize() }
+        .onChange(of: hermes.isWide) { updateIslandSize() }
+        .onChange(of: vm.notchState) { updateIslandSize() }
         .compositingGroup()
         .scaleEffect(
             x: gestureScale,
@@ -239,6 +246,21 @@ struct ContentView: View {
                     vm.close()
                 }
             }
+        }
+    }
+
+    private var islandWindowSize: CGSize {
+        if vm.notchState == .open && coordinator.currentView == .hermes {
+            return CGSize(width: vm.notchSize.width, height: vm.notchSize.height + shadowPadding)
+        }
+        return windowSize
+    }
+
+    private func updateIslandSize() {
+        guard vm.notchState == .open else { return }
+        withAnimation(animationSpring) {
+            vm.notchSize = coordinator.currentView == .hermes
+                ? HermesLayout.size(screenUUID: vm.screenUUID, wide: hermes.isWide) : openNotchSize
         }
     }
 
@@ -349,6 +371,8 @@ struct ContentView: View {
                         NotchHomeView(albumArtNamespace: albumArtNamespace)
                     case .shelf:
                         ShelfView()
+                    case .hermes:
+                        HermesDrawer()
                     }
                 }
                 .transition(
@@ -541,7 +565,7 @@ struct ContentView: View {
             }
         } else {
             hoverTask = Task {
-                try? await Task.sleep(for: .milliseconds(100))
+                try? await Task.sleep(for: .milliseconds(coordinator.currentView == .hermes ? 350 : 100))
                 guard !Task.isCancelled else { return }
                 
                 await MainActor.run {

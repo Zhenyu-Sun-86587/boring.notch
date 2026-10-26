@@ -10,6 +10,42 @@ import Foundation
 import UniformTypeIdentifiers
 
 struct ShelfDropService {
+    /// Hermes uses the same provider resolution, but retains only URLs and never decodes a full bitmap.
+    static func stagingFiles(from providers: [NSItemProvider]) async throws -> [(url: URL, temporary: Bool)] {
+        var results: [(url: URL, temporary: Bool)] = []
+        do {
+            for provider in providers {
+                if let url = await provider.extractFileURL(), url.isFileURL {
+                    results.append((url, false))
+                } else if let type = provider.registeredTypeIdentifiers.first(where: { UTType($0)?.conforms(to: .image) == true }) {
+                    let url: URL = try await withCheckedThrowingContinuation { continuation in
+                        provider.loadFileRepresentation(forTypeIdentifier: type) { url, error in
+                            do {
+                                if let error { throw error }
+                                guard let url else { throw CocoaError(.fileReadUnknown) }
+                                let destination = FileManager.default.temporaryDirectory
+                                    .appendingPathComponent("hermes-" + UUID().uuidString)
+                                    .appendingPathExtension(UTType(type)?.preferredFilenameExtension ?? "png")
+                                try FileManager.default.copyItem(at: url, to: destination)
+                                continuation.resume(returning: destination)
+                            } catch { continuation.resume(throwing: error) }
+                        }
+                    }
+                    results.append((url, true))
+                } else if let text = await provider.extractText() {
+                    guard text.utf8.count <= 65_536 else { throw CocoaError(.fileReadTooLarge) }
+                    let url = FileManager.default.temporaryDirectory.appendingPathComponent("hermes-" + UUID().uuidString + ".txt")
+                    try Data(text.utf8).write(to: url, options: .atomic)
+                    results.append((url, true))
+                } else { throw CocoaError(.fileReadUnsupportedScheme) }
+            }
+            return results
+        } catch {
+            for item in results where item.temporary { try? FileManager.default.removeItem(at: item.url) }
+            throw error
+        }
+    }
+
     static func items(from providers: [NSItemProvider]) async -> [ShelfItem] {
         var results: [ShelfItem] = []
 
