@@ -10,6 +10,9 @@ struct ClipboardSettingsView: View {
                 if store.enabled && store.needsReadAccess {
                     Button("允许读取剪贴板") { store.requestPermissions() }.disabled(store.requestingPermissions)
                 }
+                if store.enabled {
+                    Button("检查自动粘贴权限") { store.requestPermissions() }.disabled(store.requestingPermissions)
+                }
                 if store.enabled && store.readDenied {
                     Button("打开剪贴板权限设置") { store.requestPermissions() }.disabled(store.requestingPermissions)
                 }

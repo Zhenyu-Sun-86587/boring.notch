@@ -10,6 +10,8 @@ private struct Failure: Error { let reason: String }
     var posts = 0
     var postedAt: TimeInterval?
     var postSucceeds = true
+    var preflightChecks = 0
+    var requireNativeOnFirstPreflight = false
     var sample: (TimeInterval) -> ClipboardPasteObservation = { _ in
         ClipboardPasteObservation(foregroundPID: 100, focusedPID: 100)
     }
@@ -19,8 +21,10 @@ private struct Failure: Error { let reason: String }
             self.time += 0.015
             try await self.onWait?()
         }, observe: { self.sample(self.time) }, post: {
+            self.preflightChecks += 1
+            if self.requireNativeOnFirstPreflight && self.preflightChecks == 1 { return .requiresNativeStability }
             self.posts += 1; self.postedAt = self.time
-            return self.postSucceeds
+            return self.postSucceeds ? .posted : .failed
         })
     }
 }
@@ -79,13 +83,75 @@ private struct Failure: Error { let reason: String }
         otherWindow.sample = { _ in .init(originalTargetUnchanged: false, foregroundPID: 100, focusedPID: 100) }
         try check(await run(otherWindow) == .focusChanged && otherWindow.posts == 0, "another window/editor cancels instead of receiving old content")
 
-        try check(ClipboardFocusRestoration.mayRestore(sameWindow: true, savedElementValid: true, relation: .ancestorContainer), "browser WebArea ancestor can restore the original field")
-        try check(ClipboardFocusRestoration.mayRestore(sameWindow: true, savedElementValid: true, relation: .missing), "temporary loss of focused element can restore the saved field")
-        try check(!ClipboardFocusRestoration.mayRestore(sameWindow: true, savedElementValid: true, relation: .differentControl), "a newly focused editor is never overridden")
-        try check(!ClipboardFocusRestoration.mayRestore(sameWindow: false, savedElementValid: true, relation: .original), "another window is never raised")
-        try check(!ClipboardFocusRestoration.mayRestore(sameWindow: true, savedElementValid: false, relation: .missing), "deleted editors cannot be restored")
-        try check(!ClipboardFocusRestoration.ready(sameWindow: true, relation: .ancestorContainer, capturedElementFocused: false), "restoration must finish before posting")
-        try check(ClipboardFocusRestoration.ready(sameWindow: true, relation: .ancestorContainer, capturedElementFocused: true), "AXFocused confirms a restored field despite container focus reporting")
+        try check(ClipboardFocusRestoration.relation(sameElement: false, currentRole: "AXUnknown", knownAncestor: false) == .unavailable,
+                  "AXUnknown cannot prove a different control")
+        try check(ClipboardFocusRestoration.relation(sameElement: false, currentRole: "AXFutureRole", knownAncestor: false) == .unavailable,
+                  "unrecognized AX role cannot prove a different control")
+        try check(ClipboardFocusRestoration.relation(sameElement: false, currentRole: "AXGroup", knownAncestor: false) == .unavailable,
+                  "unproven browser container is unknown")
+        try check(ClipboardFocusRestoration.relation(sameElement: false, currentRole: "AXGroup", knownAncestor: true) == .ancestorContainer,
+                  "captured ancestor remains safe for AX restoration")
+        try check(ClipboardFocusRestoration.relation(sameElement: false, currentRole: "AXTextField", knownAncestor: false) == .differentControl,
+                  "a different readable input is a positive conflict")
+        let original = ClipboardFocusRestoration.Evidence(window: .matched, savedElementAvailable: true, relation: .original)
+        let ancestor = ClipboardFocusRestoration.Evidence(window: .matched, savedElementAvailable: true, relation: .ancestorContainer)
+        try check(ClipboardFocusRestoration.assess(original).mayRestore, "confirmed original window/control may restore")
+        try check(ClipboardFocusRestoration.assess(ancestor).mayRestore && !ClipboardFocusRestoration.assess(ancestor).inputReady,
+                  "known browser ancestor can restore but must finish before posting")
+        var focusedAncestor = ancestor
+        focusedAncestor.capturedElementFocused = true
+        try check(ClipboardFocusRestoration.assess(focusedAncestor).inputReady, "AXFocused confirms restored field despite ancestor reporting")
+
+        let unknownEvidence: [(String, ClipboardFocusRestoration.Evidence)] = [
+            ("no record", .init()),
+            ("saved element invalid", .init(window: .matched, savedElementAvailable: false, relation: .differentControl)),
+            ("window noValue/timeout", .init(window: .unknown, savedElementAvailable: true, relation: .original)),
+            ("focused element noValue", .init(window: .matched, savedElementAvailable: true, relation: .missing)),
+            ("current role unavailable", .init(window: .matched, savedElementAvailable: true, relation: .unavailable)),
+            ("unrecognized container", .init(window: .matched, savedElementAvailable: true, relation: .unavailable)),
+            ("AX restore invalid/cannotComplete", .init(window: .matched, savedElementAvailable: true, relation: .original, restorationAvailable: false))
+        ]
+        for (name, evidence) in unknownEvidence {
+            let assessment = ClipboardFocusRestoration.assess(evidence)
+            try check(assessment.match == .unknown && !assessment.mayRestore && assessment.inputReady,
+                      "\(name) is optional AX enhancement loss, never a proven conflict")
+            let fallback = Fixture()
+            fallback.sample = { _ in ClipboardPasteObservation(foregroundPID: 100, focusedPID: 100).withFocusAssessment(assessment) }
+            try check(await run(fallback) == .posted && fallback.posts == 1 && fallback.postedAt! >= 0.18,
+                      "\(name) uses one native paste after the longer stable interval")
+        }
+        let conflictEvidence: [(String, ClipboardFocusRestoration.Evidence)] = [
+            ("different readable window", .init(window: .conflict)),
+            ("different valid control", .init(window: .matched, savedElementAvailable: true, relation: .differentControl)),
+            ("different control survives restore failure", .init(window: .matched, savedElementAvailable: true, relation: .differentControl, restorationAvailable: false))
+        ]
+        for (name, evidence) in conflictEvidence {
+            var lease = ClipboardFocusRestoration.Lease()
+            let assessment = lease.assess(evidence)
+            try check(assessment.match == .conflict && !assessment.mayRestore && !assessment.inputReady,
+                      "\(name) remains a positive conflict")
+            try check(lease.assess(.init()).match == .conflict, "a later AX failure cannot erase \(name)")
+            let conflict = Fixture()
+            conflict.sample = { _ in ClipboardPasteObservation(foregroundPID: 100, focusedPID: 100).withFocusAssessment(assessment) }
+            try check(await run(conflict) == .focusChanged && conflict.posts == 0, "\(name) never receives an event")
+        }
+        let unknownWithOtherFocus = Fixture()
+        unknownWithOtherFocus.sample = { _ in ClipboardPasteObservation(foregroundPID: 100, focusedPID: 200)
+            .withFocusAssessment(ClipboardFocusRestoration.assess(.init())) }
+        try check(await run(unknownWithOtherFocus) == .focusUnavailable && unknownWithOtherFocus.posts == 0,
+                  "unknown AX target never hides an explicit different focused application")
+        let losesAXWhileSettling = Fixture()
+        losesAXWhileSettling.sample = { time in ClipboardPasteObservation(foregroundPID: 100, focusedPID: 100)
+            .withFocusAssessment(ClipboardFocusRestoration.assess(time < 0.045 || time > 0.075 ? original : .init())) }
+        try check(await run(losesAXWhileSettling) == .posted && losesAXWhileSettling.posts == 1
+                  && losesAXWhileSettling.postedAt! >= 0.225,
+                  "matched-to-unknown resets and retains the native stable interval even if AX later recovers")
+
+        let finalProbeLosesAX = Fixture()
+        finalProbeLosesAX.requireNativeOnFirstPreflight = true
+        try check(await run(finalProbeLosesAX) == .posted && finalProbeLosesAX.posts == 1
+                  && finalProbeLosesAX.preflightChecks == 2 && finalProbeLosesAX.postedAt! >= 0.24,
+                  "first unknown final preflight settles natively before one event, without retrying sent input")
 
         let focusTimeout = Fixture()
         focusTimeout.sample = { _ in .init(foregroundPID: 100, focusedPID: 200) }
@@ -119,7 +185,7 @@ private struct Failure: Error { let reason: String }
         let failedTransport = Fixture()
         failedTransport.postSucceeds = false
         try check(await run(failedTransport) == .eventFailure && failedTransport.posts == 1, "failed post is not retried through another route")
-        print("PASS paste sequence: native focus, variable activation, AX-less controls, input release, cancellation, supersession, lock, newer clipboard and single delivery")
+        print("PASS paste sequence: native focus, variable activation, AX matched/unknown/conflict policy, sticky positive conflict, native stability after AX loss, input release, cancellation, supersession, lock, newer clipboard and single delivery")
     }
 
     @MainActor private static func destinationTrackerChecks() throws {

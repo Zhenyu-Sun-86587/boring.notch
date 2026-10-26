@@ -41,6 +41,12 @@ struct ClipboardDrawer: View {
                     Spacer()
                 }.font(.caption)
             }
+            if store.enabled && store.needsPasteAccess && !store.needsReadAccess && !store.readDenied {
+                HStack {
+                    Button("允许自动粘贴") { store.requestPermissions() }.disabled(store.requestingPermissions)
+                    Spacer()
+                }.font(.caption)
+            }
             if store.filteredRecords.isEmpty {
                 Spacer()
                 Text(store.search.isEmpty ? "暂无记录" : "没有匹配的记录")

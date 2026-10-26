@@ -21,8 +21,8 @@ final class ClipboardPasteTargets {
         AXUIElementSetMessagingTimeout(application, 0.08)
         let window = element(application, kAXFocusedWindowAttribute)
         let input = element(application, kAXFocusedUIElementAttribute)
-        guard window.map({ process($0) == pid }) ?? true,
-              input.map({ process($0) == pid }) ?? true else { return nil }
+        // AX descendants may live in a browser's renderer process. Their references
+        // came from this application, so equality with the app PID is not required.
         let descriptor = ClipboardPasteTarget(token: UUID().uuidString, processIdentifier: pid,
             hasWindow: window != nil, hasElement: input != nil)
         var ancestors: [AXUIElement] = []
@@ -51,58 +51,41 @@ final class ClipboardPasteTargets {
         records = records.filter { $0.value.expires > now }
     }
 
-    /// Refuse another target window/control. Setting AXFocused only reasserts the captured
-    /// element after native panel release; it does not navigate to a different editor.
-    func restore(_ record: Record) -> Bool {
-        guard originalTargetUnchanged(record) else { return false }
-        if let window = record.window {
-            if boolean(window, kAXMinimizedAttribute) == true { return false }
-            // Only the already-matching captured window can be raised. This re-establishes
-            // the editor's native key window after a nonactivating panel, even if AX kept
-            // reporting the old field as focused while WindowServer focus belonged elsewhere.
-            if AXUIElementPerformAction(window, kAXRaiseAction as CFString) == .invalidUIElement { return false }
-        }
-        if let input = record.element {
-            guard ClipboardFocusRestoration.mayRestore(sameWindow: windowReady(record),
-                savedElementValid: !isInvalid(input), relation: relation(record)) else { return false }
-            var settable = DarwinBoolean(false)
-            if AXUIElementIsAttributeSettable(input, kAXFocusedAttribute as CFString, &settable) == .success,
-               settable.boolValue {
-                let result = AXUIElementSetAttributeValue(input, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-                if result == .invalidUIElement { return false }
-            }
-        }
-        return originalTargetUnchanged(record)
+    /// References are optional enhancements, including after a token was captured.
+    /// An AX failure cannot prove that the user selected another editor.
+    func evidence(_ record: Record, restorationAvailable: Bool = true) -> ClipboardFocusRestoration.Evidence {
+        let window: ClipboardFocusRestoration.Match
+        if let saved = record.window, string(saved, kAXRoleAttribute) != nil,
+           let current = element(record.application, kAXFocusedWindowAttribute),
+           string(current, kAXRoleAttribute) != nil {
+            window = CFEqual(saved, current) ? .matched : .conflict
+        } else { window = .unknown }
+        let savedAvailable = record.element.flatMap { string($0, kAXRoleAttribute) } != nil
+        return .init(window: window, savedElementAvailable: savedAvailable,
+            relation: savedAvailable ? relation(record) : .unavailable,
+            capturedElementFocused: record.element.flatMap { boolean($0, kAXFocusedAttribute) } == true,
+            restorationAvailable: restorationAvailable)
     }
 
-    func originalTargetUnchanged(_ record: Record) -> Bool {
-        if let saved = record.window, let current = element(record.application, kAXFocusedWindowAttribute), !CFEqual(saved, current) { return false }
-        if let saved = record.element, isInvalid(saved) { return false }
-        return relation(record) != .differentControl
+    /// Restore only a confirmed matching window and a valid saved input. The return
+    /// value describes AX availability, never whether the destination changed.
+    func restore(_ record: Record, assessment: ClipboardFocusRestoration.Assessment) -> Bool {
+        guard assessment.mayRestore, let window = record.window, let input = record.element,
+              boolean(window, kAXMinimizedAttribute) != true else { return false }
+        guard AXUIElementPerformAction(window, kAXRaiseAction as CFString) == .success else { return false }
+        if assessment.inputReady { return true }
+        var settable = DarwinBoolean(false)
+        guard AXUIElementIsAttributeSettable(input, kAXFocusedAttribute as CFString, &settable) == .success,
+              settable.boolValue else { return false }
+        return AXUIElementSetAttributeValue(input, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success
     }
 
-    func canRestoreNow(_ record: Record) -> Bool { windowReady(record) }
-
-    func inputReady(_ record: Record) -> Bool {
-        guard record.element != nil else { return windowReady(record) }
-        return ClipboardFocusRestoration.ready(sameWindow: windowReady(record), relation: relation(record),
-            capturedElementFocused: record.element.flatMap { boolean($0, kAXFocusedAttribute) } == true)
-    }
-    private func windowReady(_ record: Record) -> Bool {
-        guard let saved = record.window else { return true }
-        guard let current = element(record.application, kAXFocusedWindowAttribute) else { return false }
-        return CFEqual(saved, current)
-    }
     private func relation(_ record: Record) -> ClipboardFocusRestoration.Relation {
-        guard let saved = record.element else { return .original }
+        guard let saved = record.element else { return .unavailable }
         guard let current = element(record.application, kAXFocusedUIElementAttribute) else { return .missing }
-        if CFEqual(saved, current) { return .original }
-        // Browsers can temporarily focus their WebArea/group when an app is reactivated.
-        // Restore only a container that is actually an ancestor of the saved editor, never
-        // another field/control in the same window. No value or text attribute is inspected.
-        let containers = Set(["AXWebArea", "AXGroup", "AXScrollArea", "AXWindow", "AXApplication", "AXSplitGroup", "AXLayoutArea"])
-        guard let role = string(current, kAXRoleAttribute), containers.contains(role) else { return .differentControl }
-        return record.ancestors.contains(where: { CFEqual($0, current) }) ? .ancestorContainer : .differentControl
+        return ClipboardFocusRestoration.relation(sameElement: CFEqual(saved, current),
+            currentRole: string(current, kAXRoleAttribute),
+            knownAncestor: record.ancestors.contains(where: { CFEqual($0, current) }))
     }
 
     private func element(_ source: AXUIElement, _ attribute: String) -> AXUIElement? {
@@ -113,10 +96,6 @@ final class ClipboardPasteTargets {
         AXUIElementSetMessagingTimeout(result, 0.08)
         return result
     }
-    private func process(_ element: AXUIElement) -> pid_t? {
-        var pid: pid_t = 0
-        return AXUIElementGetPid(element, &pid) == .success ? pid : nil
-    }
     private func boolean(_ element: AXUIElement, _ attribute: String) -> Bool? {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
@@ -126,9 +105,5 @@ final class ClipboardPasteTargets {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
         return value as? String
-    }
-    private func isInvalid(_ element: AXUIElement) -> Bool {
-        var value: CFTypeRef?
-        return AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &value) == .invalidUIElement
     }
 }

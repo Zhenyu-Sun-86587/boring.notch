@@ -15,6 +15,8 @@ final class ClipboardPermissionController: NSObject, NSWindowDelegate {
     private var alertReturnApplication: NSRunningApplication?
     private var terminationObserver: NSObjectProtocol?
     private var authorizationCheck: Task<Void, Never>?
+    private var feedbackPanel: NSPanel?
+    private var feedbackDismiss: DispatchWorkItem?
     private struct Waiter {
         let continuation: CheckedContinuation<ClipboardPasteAccess?, Never>
         let timeout: DispatchWorkItem
@@ -46,6 +48,13 @@ final class ClipboardPermissionController: NSObject, NSWindowDelegate {
         if access.canPaste { return ClipboardPermissionPolicy.mayPaste(wasAuthorized: true, requestedPermission: false) }
         requestPastePermission(access, ifForeground: foreground)
         return false
+    }
+
+    /// Copy/paste actions check existing authorization without opening a permission
+    /// window. The already copied content stays ready for a manual Command-V.
+    func pasteAccessWithoutPrompt() async -> ClipboardPasteAccess? {
+        guard !terminating, !Task.isCancelled else { return nil }
+        return await checkPasteAccess()
     }
 
     /// Read access is requested first. If it needs Settings, the user completes that step before
@@ -84,6 +93,7 @@ final class ClipboardPermissionController: NSObject, NSWindowDelegate {
             if gate.contains(token), !Task.isCancelled { showUnavailable(ifForeground: foreground) }
             return
         }
+        ClipboardStore.shared.setPasteAccessNeeded(!access.canPaste)
         if !access.canPaste { requestPastePermission(access, ifForeground: foreground) }
     }
 
@@ -91,6 +101,8 @@ final class ClipboardPermissionController: NSObject, NSWindowDelegate {
         epoch = UUID()
         gate.cancel()
         closeAlert()
+        feedbackDismiss?.cancel(); feedbackDismiss = nil
+        feedbackPanel?.orderOut(nil); feedbackPanel = nil
         let waiters = Array(authorizationWaiters.values)
         authorizationWaiters.removeAll()
         for waiter in waiters {
@@ -127,26 +139,70 @@ final class ClipboardPermissionController: NSObject, NSWindowDelegate {
         }
     }
 
-    /// Failure feedback remains visible after the drawer closes; no modal loop or automatic retry.
+    /// A failed automatic paste never makes the accessory app key or starts an alert.
+    /// The user can immediately press Command-V in the restored destination.
     func explainPasteFailure(_ result: ClipboardPasteResult, copied: Bool = true) {
-        let foreground = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        let message: String
+        let reason: String
         switch result {
         case .posted, .cancelled, .screenLocked: return
         case .unauthorized, .postEventUnauthorized:
-            showAlert(title: "允许自动粘贴", message: "请在“\(AccessibilityPermission.displayName)”中允许当前的 Boring Notch。授权后，回到目标输入框并重新打开剪贴板。",
-                primary: "打开设置", ifForeground: foreground) { self.openSettings("Privacy_Accessibility") }
-            return
-        case .snapshotUnavailable:
-            message = "未能保存原输入位置。请回到目标输入框，重新打开剪贴板后再试。"
-        case .targetUnavailable: message = "原应用已不可用。"
-        case .focusChanged: message = "原输入框或窗口已变化。请返回需要粘贴的输入框后重新打开剪贴板。"
-        case .focusUnavailable: message = "键盘焦点未能返回原输入框。请重新打开剪贴板后再试。"
-        case .inputHeld: message = "请松开按键和鼠标按钮后重试。"
-        case .clipboardChanged: message = "剪贴板已被其他复制操作更改。"
-        case .eventFailure: message = "系统未能发送粘贴按键。请检查控制权限后重试。"
+            ClipboardStore.shared.setPasteAccessNeeded(true)
+            reason = "自动粘贴需要辅助功能权限。请重新打开剪贴板，点击“允许自动粘贴”。"
+        case .snapshotUnavailable: reason = "未能恢复原输入位置。"
+        case .targetUnavailable: reason = "原应用已不可用。"
+        case .focusChanged: reason = "输入位置已变化，自动粘贴已取消。"
+        case .focusUnavailable: reason = "未能恢复键盘焦点。"
+        case .inputHeld: reason = "按键或鼠标按钮尚未松开。"
+        case .clipboardChanged: reason = "剪贴板已被其他复制操作更改。"
+        case .eventFailure: reason = "系统未能完成自动粘贴。"
         }
-        showAlert(title: "自动粘贴未完成", message: message + (copied ? "\n内容已复制，可按 ⌘V 手动粘贴。" : ""), primary: "好", ifForeground: foreground)
+        let message = reason + (copied && result != .clipboardChanged ? " 内容已复制，可按 ⌘V 手动粘贴。" : "")
+        ClipboardStore.shared.reportPasteError(message)
+        showFeedback(message)
+    }
+
+    func explainCopyFailure(_ message: String) {
+        showFeedback(message)
+    }
+
+    private func showFeedback(_ message: String) {
+        guard !terminating else { return }
+        feedbackDismiss?.cancel()
+        feedbackPanel?.orderOut(nil)
+        let label = NSTextField(wrappingLabelWithString: message)
+        label.font = .systemFont(ofSize: 13)
+        label.textColor = .labelColor
+        label.preferredMaxLayoutWidth = 360
+        let size = label.fittingSize
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 392, height: max(60, size.height + 28)),
+            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.isReleasedWhenClosed = false
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+        panel.ignoresMouseEvents = true
+        panel.hidesOnDeactivate = false
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        let background = NSVisualEffectView(frame: panel.contentView!.bounds)
+        background.material = .hudWindow
+        background.blendingMode = .behindWindow
+        background.state = .active
+        background.wantsLayer = true
+        background.layer?.cornerRadius = 12
+        label.frame = background.bounds.insetBy(dx: 16, dy: 14)
+        background.addSubview(label)
+        panel.contentView = background
+        if let frame = NSScreen.main?.visibleFrame {
+            panel.setFrameOrigin(NSPoint(x: frame.midX - panel.frame.width / 2, y: frame.maxY - panel.frame.height - 50))
+        }
+        feedbackPanel = panel
+        panel.orderFrontRegardless()
+        let dismiss = DispatchWorkItem { [weak self, weak panel] in
+            panel?.orderOut(nil)
+            if self?.feedbackPanel === panel { self?.feedbackPanel = nil; self?.feedbackDismiss = nil }
+        }
+        feedbackDismiss = dismiss
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: dismiss)
     }
     private func showReadSettings(ifForeground foreground: pid_t?) {
         showAlert(title: "允许读取剪贴板", message: "请在系统设置中将 Boring Notch 的剪贴板访问设为“始终允许”。",

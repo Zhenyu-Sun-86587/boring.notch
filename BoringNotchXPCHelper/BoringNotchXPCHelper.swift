@@ -100,24 +100,31 @@ class BoringNotchXPCHelper: NSObject, BoringNotchXPCHelperProtocol {
                     processIdentifier: ProcessInfo.processInfo.processIdentifier, bundleIdentifier: Bundle.main.bundleIdentifier ?? "")
                 guard access.accessibility else { reply(ClipboardPasteResult.unauthorized.rawValue); return }
                 guard access.postEvents else { reply(ClipboardPasteResult.postEventUnauthorized.rawValue); return }
-                guard let original = Self.clipboardTargets.record(targetToken, pid: targetPID) else {
-                    reply(ClipboardPasteResult.snapshotUnavailable.rawValue); return
-                }
-                defer { Self.clipboardTargets.release(original.descriptor.token) }
+                // Tokens are optional AX enhancements. XPC restarts discard their in-memory
+                // records; native app activation remains a usable clipboard destination.
+                let original = Self.clipboardTargets.record(targetToken, pid: targetPID)
+                defer { if let original { Self.clipboardTargets.release(original.descriptor.token) } }
                 let systemWide = AXUIElementCreateSystemWide()
                 AXUIElementSetMessagingTimeout(systemWide, 0.05)
                 var restoreAttempts = 0
-                var originalUnchanged = true
+                var focusLease = ClipboardFocusRestoration.Lease()
+                var restorationAvailable = true
+                var nativeFallbackSeen = false
                 @MainActor func observe() -> ClipboardPasteObservation {
                     let foreground = NSWorkspace.shared.frontmostApplication?.processIdentifier
-                    if foreground == targetPID {
-                        originalUnchanged = Self.clipboardTargets.originalTargetUnchanged(original)
-                        if originalUnchanged, restoreAttempts < 3,
-                           Self.clipboardTargets.canRestoreNow(original),
-                           restoreAttempts == 0 || !Self.clipboardTargets.inputReady(original) {
-                            originalUnchanged = Self.clipboardTargets.restore(original)
-                            restoreAttempts += 1
-                        }
+                    var assessment = focusLease.assess(original.map {
+                        Self.clipboardTargets.evidence($0, restorationAvailable: restorationAvailable)
+                    } ?? .init())
+                    if foreground == targetPID, let original, assessment.mayRestore, restoreAttempts < 3,
+                       restoreAttempts == 0 || !assessment.inputReady {
+                        restorationAvailable = Self.clipboardTargets.restore(original, assessment: assessment)
+                        restoreAttempts += 1
+                        assessment = focusLease.assess(Self.clipboardTargets.evidence(original,
+                            restorationAvailable: restorationAvailable))
+                    }
+                    if restoreAttempts >= 3, assessment.match == .matched, !assessment.inputReady, let original {
+                        restorationAvailable = false
+                        assessment = focusLease.assess(Self.clipboardTargets.evidence(original, restorationAvailable: false))
                     }
                     var focused: CFTypeRef?
                     let error = AXUIElementCopyAttributeValue(systemWide, kAXFocusedApplicationAttribute as CFString, &focused)
@@ -126,6 +133,7 @@ class BoringNotchXPCHelper: NSObject, BoringNotchXPCHelperProtocol {
                         var pid: pid_t = 0
                         if AXUIElementGetPid(focused as! AXUIElement, &pid) == .success { focusedPID = pid }
                     }
+                    nativeFallbackSeen = nativeFallbackSeen || assessment.match == .unknown || focusedPID == nil
                     let modifiers: CGEventFlags = [.maskCommand, .maskControl, .maskAlternate, .maskShift]
                     let released = CGEventSource.flagsState(.hidSystemState).intersection(modifiers).isEmpty
                         && ![CGKeyCode(36), 76, 9].contains { CGEventSource.keyState(.hidSystemState, key: $0) }
@@ -135,27 +143,29 @@ class BoringNotchXPCHelper: NSObject, BoringNotchXPCHelperProtocol {
                         unlocked: session != nil && session?["CGSSessionScreenIsLocked"] as? Bool != true,
                         targetAlive: targetPID > 0 && NSRunningApplication(processIdentifier: targetPID)?.isTerminated == false,
                         clipboardUnchanged: NSPasteboard.general.changeCount == pasteboardChangeCount,
-                        originalTargetUnchanged: originalUnchanged,
                         foregroundPID: foreground,
                         focusedPID: focusedPID,
                         // Some Qt/custom applications expose no usable focus tree,
                         // including noValue/cannotComplete or a missing PID. An
                         // explicit different PID remains a firm focus mismatch.
                         focusProbeAvailable: focusedPID != nil,
-                        originalInputReady: foreground == targetPID && Self.clipboardTargets.inputReady(original),
-                        inputReleased: released)
+                        inputReleased: released).withFocusAssessment(assessment)
                 }
                 let result = await Self.clipboardPaster.perform(requestID: requestID, targetPID: targetPID, hostPID: hostPID,
                     environment: .init(observe: observe, post: {
+                        let fallbackWasAlreadyObserved = nativeFallbackSeen
                         let current = observe()
+                        // No event has been sent. A first unknown final probe returns to
+                        // the same request's longer native settling before its single pair.
+                        guard !(current.requiresNativeStability || !current.focusProbeAvailable) || fallbackWasAlreadyObserved else { return .requiresNativeStability }
                         guard AXIsProcessTrusted(), CGPreflightPostEventAccess(), current.unlocked, current.targetAlive,
                               current.clipboardUnchanged, current.inputReleased, current.foregroundPID == targetPID,
                               current.originalTargetUnchanged, current.originalInputReady,
-                              current.focusedPID == targetPID || !current.focusProbeAvailable else { return false }
-                        return ClipboardPasteEvent.post(to: targetPID)
+                              current.focusedPID == targetPID || !current.focusProbeAvailable else { return .failed }
+                        return ClipboardPasteEvent.post(to: targetPID) ? .posted : .failed
                     }))
                 NSLog("[clipboard] helper request=%@ result=%@ target=%d ax=%d post=%d window=%d element=%d restoreAttempts=%d", requestID, result.rawValue,
-                    targetPID, access.accessibility, access.postEvents, original.descriptor.hasWindow, original.descriptor.hasElement, restoreAttempts)
+                    targetPID, access.accessibility, access.postEvents, original?.descriptor.hasWindow == true, original?.descriptor.hasElement == true, restoreAttempts)
                 reply(result.rawValue)
             }
         }

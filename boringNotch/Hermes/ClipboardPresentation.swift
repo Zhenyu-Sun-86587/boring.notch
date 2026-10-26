@@ -29,6 +29,10 @@ final class ClipboardPresentation: ObservableObject {
     private var pasteTask: Task<Void, Never>?
     private var pasteActionID: UUID?
     private var suspendedPanels: [(BoringNotchSkyLightWindow, UUID)] = []
+    private var keyboardPointerEntered = false
+    private var pointerScreens = Set<String>()
+    private var outsideClickMonitor: Any?
+    private var localClickMonitor: Any?
 
     func configure(windowManager: NotchWindowManager) {
         self.windowManager = windowManager
@@ -40,13 +44,51 @@ final class ClipboardPresentation: ObservableObject {
             object: nil, queue: .main) { [weak self] note in
                 guard let application = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
                 MainActor.assumeIsolated {
-                    self?.destinationTracker.observeActivation(application.processIdentifier, hostPID: hostPID)
+                    guard let self else { return }
+                    self.destinationTracker.observeActivation(application.processIdentifier, hostPID: hostPID)
+                    if self.sessionPresented || self.pasteActionID != nil, application.processIdentifier != hostPID,
+                       application.processIdentifier != self.keyboardTargetApplication?.processIdentifier {
+                        self.targetInvalidatedByOwnEditor = true
+                        self.dismiss()
+                    }
                 }
             })
         workspaceObservers.append(workspace.notificationCenter.addObserver(forName: NSWorkspace.didTerminateApplicationNotification,
             object: nil, queue: .main) { [weak self] note in
                 guard let application = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
-                MainActor.assumeIsolated { self?.destinationTracker.forget(application.processIdentifier) }
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.destinationTracker.forget(application.processIdentifier)
+                    if self.sessionPresented || self.pasteActionID != nil,
+                       self.keyboardTargetApplication?.processIdentifier == application.processIdentifier {
+                        self.targetInvalidatedByOwnEditor = true
+                        self.dismiss()
+                    }
+                }
+            })
+        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
+            MainActor.assumeIsolated { self?.dismissAfterOutsideClick() }
+        }
+        localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
+            if !(event.window is BoringNotchSkyLightWindow) {
+                MainActor.assumeIsolated { self?.dismissAfterOutsideClick() }
+            }
+            return event
+        }
+        observers.append(NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification,
+            object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, self.sessionPresented else { return }
+                    let sessionID = ClipboardStore.shared.sessionID
+                    Task { @MainActor in
+                        await Task.yield()
+                        guard self.sessionPresented, ClipboardStore.shared.sessionID == sessionID,
+                              BoringViewCoordinator.shared.currentView == .clipboard,
+                              !self.notchPanels.contains(where: \.isIslandKeyboardHandoffActive) else { return }
+                        self.targetInvalidatedByOwnEditor = true
+                        self.dismiss()
+                    }
+                }
             })
         observers.append(NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification,
             object: nil, queue: .main) { [weak self] note in
@@ -54,17 +96,24 @@ final class ClipboardPresentation: ObservableObject {
                 MainActor.assumeIsolated { self?.targetInvalidatedByOwnEditor = true }
             })
         observers.append(NotificationCenter.default.addObserver(forName: Notification.Name("ClipboardPasteRequested"), object: nil, queue: .main) { [weak self] note in
-            let pid = (note.userInfo?["targetPID"] as? NSNumber)?.int32Value
             let sessionID = note.userInfo?["sessionID"] as? String
             let changeCount = note.userInfo?["changeCount"] as? Int
-            let targetToken = note.userInfo?["targetToken"] as? String
-            Task { @MainActor in self?.paste(to: pid, sessionID: sessionID, changeCount: changeCount, targetToken: targetToken) }
+            Task { @MainActor in self?.paste(sessionID: sessionID, changeCount: changeCount) }
         })
         observers.append(NotificationCenter.default.addObserver(forName: Notification.Name("ClipboardDismissRequested"), object: nil, queue: .main) { [weak self] note in
             let sessionID = note.userInfo?["sessionID"] as? String
             Task { @MainActor in
                 guard sessionID == ClipboardStore.shared.sessionID.uuidString else { return }
                 self?.dismiss()
+            }
+        })
+        observers.append(NotificationCenter.default.addObserver(forName: .clipboardCopyFailed, object: nil, queue: .main) { [weak self] note in
+            let sessionID = note.userInfo?["sessionID"] as? String
+            let message = note.userInfo?["message"] as? String ?? "无法复制这条记录。"
+            Task { @MainActor in
+                guard sessionID == ClipboardStore.shared.sessionID.uuidString else { return }
+                self?.dismiss()
+                ClipboardPermissionController.shared.explainCopyFailure(message)
             }
         })
         observers.append(NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { [weak self] note in
@@ -155,42 +204,29 @@ final class ClipboardPresentation: ObservableObject {
         keyboardTargetReady = false
     }
 
-    /// Recover only a still-current session that was opened before a destination was known.
-    /// A captured destination remains fixed; activation notifications never redirect a paste.
-    func applicationForPaste(sessionID: UUID) -> NSRunningApplication? {
-        guard sessionPresented, ClipboardStore.shared.sessionID == sessionID else { return nil }
-        if targetInvalidatedByOwnEditor {
-            // The user has explicitly returned to an external editor after a permission dialog.
-            // Only this fresh action may replace the invalidated input snapshot.
-            guard let foreground = NSWorkspace.shared.frontmostApplication,
-                  foreground.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return nil }
-            endKeyboardTarget()
-        }
-        if keyboardTargetApplication == nil { prepareKeyboardTarget() }
-        return keyboardTargetApplication
+    /// Keyboard opening is pinned only until the pointer has entered it once.
+    /// The normal hover grace period can then close this display on pointer exit.
+    func shouldKeepOpen(on screenUUID: String?) -> Bool {
+        ClipboardStore.shared.keyboardSessionActive && keyboardScreenUUID == screenUUID && !keyboardPointerEntered
     }
 
-    func targetToken(for pid: Int32) async -> String? {
-        guard !targetInvalidatedByOwnEditor else { return nil }
-        // A newly granted permission can be retried without closing only when the external
-        // editor truly owns focus again. Never recapture while the notch still owns key input.
-        if keyboardTargetReady, keyboardTarget == nil,
-           keyboardTargetApplication?.processIdentifier == pid,
-           NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
-           !notchPanels.contains(where: \.isKeyWindow) {
-            keyboardTargetReady = false
+    func pointerChanged(_ hovering: Bool, on screenUUID: String?) {
+        if let screenUUID {
+            if hovering { pointerScreens.insert(screenUUID) }
+            else { pointerScreens.remove(screenUUID) }
         }
-        prepareKeyboardTarget()
-        let generation = targetGeneration
-        let started = ProcessInfo.processInfo.systemUptime
-        while !keyboardTargetReady && ProcessInfo.processInfo.systemUptime - started < 2.1 {
-            guard !Task.isCancelled, targetGeneration == generation else { return nil }
-            do { try await Task.sleep(for: .milliseconds(15)) } catch { return nil }
+        if hovering, ClipboardStore.shared.keyboardSessionActive, keyboardScreenUUID == screenUUID {
+            keyboardPointerEntered = true
         }
-        guard !Task.isCancelled, !targetInvalidatedByOwnEditor, targetGeneration == generation, keyboardTargetReady,
-              keyboardTargetApplication?.processIdentifier == pid,
-              keyboardTarget?.processIdentifier == pid else { return nil }
-        return keyboardTarget?.token
+    }
+
+    private func dismissAfterOutsideClick() {
+        // Global events belong to another app; local callers already excluded notch
+        // windows. The fixed transparent panel envelope is not a hit-test region.
+        guard sessionPresented || pasteActionID != nil else { return }
+        // This click is a new input intention. Close without reactivating the old editor.
+        targetInvalidatedByOwnEditor = true
+        dismiss()
     }
 
     func toggle() {
@@ -230,6 +266,7 @@ final class ClipboardPresentation: ObservableObject {
         sessionPresented = true
         ClipboardStore.shared.beginSession()
         keyboardScreenUUID = viewModel.screenUUID
+        keyboardPointerEntered = viewModel.screenUUID.map { pointerScreens.contains($0) } ?? false
         ClipboardStore.shared.keyboardSessionActive = true
         viewModel.open(tab: .clipboard)
         if let screen = viewModel.screenUUID, let panel = window(on: screen) as? BoringNotchSkyLightWindow {
@@ -289,8 +326,12 @@ final class ClipboardPresentation: ObservableObject {
         // SwiftUI delivers close/tab observations after dismiss-for-paste. They must
         // not cancel the new delayed paste task installed by that same action.
         guard sessionPresented else { return }
-        cancelPendingPaste()
-        clearSession()
+        if BoringViewCoordinator.shared.currentView == .clipboard { dismiss() }
+        else {
+            // Switching to Hermes shares the same target lease until that workspace closes.
+            cancelPendingPaste()
+            clearSession()
+        }
     }
 
     private func clearSession() {
@@ -299,14 +340,23 @@ final class ClipboardPresentation: ObservableObject {
         visibility.reset()
         ownerWindows = [:]
         keyboardScreenUUID = nil
+        keyboardPointerEntered = false
         ClipboardStore.shared.keyboardSessionActive = false
         ClipboardStore.shared.endSession()
     }
 
     func dismiss() {
+        let target = keyboardTargetApplication
+        let mayReturnFocus = !targetInvalidatedByOwnEditor && windowManager?.isScreenLocked == false
+            && (NSWorkspace.shared.frontmostApplication?.processIdentifier == target?.processIdentifier
+                || NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier)
         cancelPendingPaste()
         clearSession()
         closeDrawers()
+        if mayReturnFocus, let target, !target.isTerminated {
+            NSApp.yieldActivation(to: target)
+            _ = target.activate(from: .current, options: [])
+        }
         endKeyboardTarget()
     }
 
@@ -329,57 +379,63 @@ final class ClipboardPresentation: ObservableObject {
         }
     }
 
-    private func paste(to pid: Int32?, sessionID: String?, changeCount: Int?, targetToken: String?) {
-        guard sessionPresented, keyboardScreenUUID != nil || visibility.mouseOwner != nil,
-              sessionID == ClipboardStore.shared.sessionID.uuidString else { return }
-        guard pasteActionID == nil else { return }
-        guard let pid, let changeCount, let sessionID,
-              let target = NSRunningApplication(processIdentifier: pid), !target.isTerminated,
-              target.bundleIdentifier != Bundle.main.bundleIdentifier else {
-            ClipboardStore.shared.reportPasteError("已复制；原应用已不可用，请手动粘贴。")
-            dismiss()
-            ClipboardPermissionController.shared.explainPasteFailure(.targetUnavailable)
-            return
-        }
-        // Never move a paste into an application the user switched to meanwhile.
+    private func paste(sessionID: String?, changeCount: Int?) {
+        guard sessionPresented, sessionID == ClipboardStore.shared.sessionID.uuidString,
+              pasteActionID == nil, let sessionID, let changeCount else { return }
+        // The pasteboard is already populated. A missing/expired helper snapshot only
+        // removes AX restoration; the original application is still a valid destination.
+        let target = keyboardTargetApplication
+        let targetToken = keyboardTarget?.token
+        let invalidated = targetInvalidatedByOwnEditor
         let foregroundPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        guard foregroundPID == pid || foregroundPID == ProcessInfo.processInfo.processIdentifier else {
-            ClipboardStore.shared.reportPasteError("已复制；当前应用已切换，请手动粘贴。")
-            dismiss()
-            ClipboardPermissionController.shared.explainPasteFailure(.focusChanged)
-            return
-        }
+        let hostPID = ProcessInfo.processInfo.processIdentifier
         let actionID = UUID()
         pasteActionID = actionID
+        let panels = notchPanels
+        suspendedPanels = panels.map { ($0, $0.beginIslandKeyboardHandoff()) }
+        clearSession()
+        closeDrawers()
         pasteTask = Task { @MainActor in
             defer {
                 ClipboardStore.shared.finishPaste(sessionID: sessionID)
                 self.finishPasteAction(actionID)
             }
-            let trusted = await ClipboardPermissionController.shared.ensurePasteAccess()
             guard !Task.isCancelled, self.pasteActionID == actionID,
                   self.windowManager?.isScreenLocked == false else { return }
-            guard trusted else {
-                ClipboardStore.shared.reportPasteError("已复制；请先在系统设置中授予当前版本控制权限，或按 ⌘V 手动粘贴。")
-                return
-            }
-            guard !self.targetInvalidatedByOwnEditor else {
+            guard !invalidated else {
                 ClipboardPermissionController.shared.explainPasteFailure(.focusChanged)
                 return
             }
-            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid || NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier else {
-                ClipboardStore.shared.reportPasteError("已复制；当前应用已切换，请手动粘贴。")
+            guard let target, !target.isTerminated, target.processIdentifier != hostPID else {
+                ClipboardPermissionController.shared.explainPasteFailure(.targetUnavailable)
+                return
+            }
+            let pid = target.processIdentifier
+            // A user-selected app is never replaced by the saved destination.
+            let currentPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            guard (foregroundPID == pid || foregroundPID == hostPID),
+                  (currentPID == pid || currentPID == hostPID) else {
                 ClipboardPermissionController.shared.explainPasteFailure(.focusChanged)
                 return
             }
-            // A nonactivating panel can own keyboard focus while the original app
-            // remains frontmost. Order it out; resignKey() is only a notification.
-            let panels = self.notchPanels
-            self.clearSession()
-            self.suspendedPanels = panels.map { ($0, $0.beginIslandKeyboardHandoff()) }
-            self.closeDrawers()
+            guard !Task.isCancelled, self.pasteActionID == actionID,
+                  self.windowManager?.isScreenLocked == false else { return }
             NSApp.yieldActivation(to: target)
             _ = target.activate(from: .current, options: [])
+            // Authorization is read-only here. Permission requests belong to explicit
+            // settings actions and must never interrupt copied-content fallback.
+            let access = await ClipboardPermissionController.shared.pasteAccessWithoutPrompt()
+            guard !Task.isCancelled, self.pasteActionID == actionID,
+                  self.windowManager?.isScreenLocked == false else { return }
+            guard let access else {
+                ClipboardPermissionController.shared.explainPasteFailure(.eventFailure)
+                return
+            }
+            guard access.canPaste else {
+                ClipboardPermissionController.shared.explainPasteFailure(access.accessibility ? .postEventUnauthorized : .unauthorized)
+                return
+            }
+            ClipboardStore.shared.setPasteAccessNeeded(false)
             for _ in 0..<30 {
                 guard !Task.isCancelled, self.pasteActionID == actionID,
                       self.windowManager?.isScreenLocked == false else { return }
@@ -387,30 +443,14 @@ final class ClipboardPresentation: ObservableObject {
                 do { try await Task.sleep(for: .milliseconds(10)) } catch { return }
             }
             guard !self.notchPanels.contains(where: \.isKeyWindow) else {
-                ClipboardStore.shared.reportPasteError("已复制；键盘焦点未能返回原应用，请手动粘贴。")
                 ClipboardPermissionController.shared.explainPasteFailure(.focusUnavailable)
                 return
             }
-            let result = await XPCHelperClient.shared.pasteClipboard(to: pid, changeCount: changeCount, targetToken: targetToken, requestID: actionID)
+            let result = await XPCHelperClient.shared.pasteClipboard(to: pid, changeCount: changeCount,
+                targetToken: targetToken, requestID: actionID)
             guard self.pasteActionID == actionID, !Task.isCancelled else { return }
             NSLog("[clipboard] host request=%@ result=%@ target=%d", actionID.uuidString, result.rawValue, pid)
             ClipboardPermissionController.shared.explainPasteFailure(result)
-            switch result {
-            case .posted, .cancelled: break
-            case .unauthorized, .postEventUnauthorized:
-                ClipboardStore.shared.reportPasteError("已复制；请在系统设置中授予当前版本辅助功能权限。")
-            case .inputHeld:
-                ClipboardStore.shared.reportPasteError("已复制；请松开按键后重试。")
-            case .clipboardChanged:
-                ClipboardStore.shared.reportPasteError("剪贴板已更改，已取消自动粘贴。")
-            case .screenLocked: break
-            case .targetUnavailable:
-                ClipboardStore.shared.reportPasteError("已复制；原应用已不可用，请手动粘贴。")
-            case .focusChanged:
-                ClipboardStore.shared.reportPasteError("已复制；当前应用已切换，请手动粘贴。")
-            case .focusUnavailable, .snapshotUnavailable, .eventFailure:
-                ClipboardStore.shared.reportPasteError("已复制；键盘焦点未能返回原应用，请手动粘贴。")
-            }
         }
     }
 
@@ -419,7 +459,9 @@ final class ClipboardPresentation: ObservableObject {
         pasteTask?.cancel()
         pasteTask = nil
         restorePanels()
-        if keyboardOwners.isEmpty { endKeyboardTarget() }
+        // A visibility update can arrive before endKeepingWindow(). Keep its
+        // destination until that unified close has had a chance to return focus.
+        if keyboardOwners.isEmpty && !sessionPresented { endKeyboardTarget() }
     }
 
     private func finishPasteAction(_ actionID: UUID) {
@@ -427,7 +469,7 @@ final class ClipboardPresentation: ObservableObject {
         pasteActionID = nil
         pasteTask = nil
         restorePanels()
-        if keyboardOwners.isEmpty { endKeyboardTarget() }
+        endKeyboardTarget()
     }
 
     private func restorePanels() {

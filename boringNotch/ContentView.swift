@@ -308,7 +308,11 @@ struct ContentView: View {
                             wantsKeyboard: workspaceIsOpen,
                             permitsKeyboardWithoutHover: clipboard.keyboardSessionActive && clipboardPresentation.keyboardScreenUUID == vm.screenUUID,
                             keyboardActivation: coordinator.currentView == .clipboard ? clipboard.sessionID.uuidString : "hermes",
-                            keyboardReady: clipboardPresentation.keyboardTargetReady)
+                            keyboardReady: clipboardPresentation.keyboardTargetReady,
+                            traceContext: IslandGeometryTraceContext(targetSize: workspaceSurfaceTarget,
+                                selection: coordinator.currentView.rawValue, open: vm.notchState == .open,
+                                gestureProgress: gestureProgress, measuredClosedSize: measuredClosedSurfaceSize,
+                                measuredCompactSize: measuredCompactSurfaceSize))
                     })
                           .overlay(alignment: .top) {
                               displayClosedNotchHeight.isZero && vm.notchState == .closed ? nil
@@ -469,7 +473,7 @@ struct ContentView: View {
                 }
 
                 dropInteraction.dropEvent = false
-                if !SharingStateManager.shared.preventNotchClose && !clipboard.keyboardSessionActive {
+                if !SharingStateManager.shared.preventNotchClose && !clipboardPresentation.shouldKeepOpen(on: vm.screenUUID) {
                     vm.close()
                 }
             }
@@ -955,7 +959,7 @@ extension ContentView {
                 if self.vm.notchState == .open,
                    !self.isHovering,
                    !self.vm.isPopoverActive,
-                   !self.clipboard.keyboardSessionActive,
+                   !self.clipboardPresentation.shouldKeepOpen(on: self.vm.screenUUID),
                    !self.vm.dropInteraction.anyDropZoneTargeting,
                    !SharingStateManager.shared.preventNotchClose {
                     self.vm.close()
@@ -965,6 +969,7 @@ extension ContentView {
     }
 
     private func handleHover(_ hovering: Bool) {
+        clipboardPresentation.pointerChanged(hovering, on: vm.screenUUID)
         if coordinator.firstLaunch { return }
         hoverTask?.cancel()
 
@@ -1020,7 +1025,7 @@ extension ContentView {
 
                     if self.vm.notchState == .open,
                        !self.vm.isPopoverActive,
-                       !self.clipboard.keyboardSessionActive,
+                       !self.clipboardPresentation.shouldKeepOpen(on: self.vm.screenUUID),
                        !self.vm.dropInteraction.anyDropZoneTargeting,
                        !SharingStateManager.shared.preventNotchClose {
                         self.vm.close()

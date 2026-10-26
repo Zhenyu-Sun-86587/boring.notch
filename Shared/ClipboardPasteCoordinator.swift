@@ -18,18 +18,28 @@ struct ClipboardPasteObservation: Sendable {
     var focusedPID: Int32?
     var focusProbeAvailable = true
     var originalInputReady = true
+    var requiresNativeStability = false
     var inputReleased = true
+
+    func withFocusAssessment(_ assessment: ClipboardFocusRestoration.Assessment) -> Self {
+        var result = self
+        result.originalTargetUnchanged = assessment.match != .conflict
+        result.originalInputReady = assessment.inputReady
+        result.requiresNativeStability = assessment.match == .unknown
+        return result
+    }
 }
 
 /// The helper uses the same sequence as the fixture checks. In particular a
 /// frontmost PID alone does not prove that a nonactivating panel released focus.
 @MainActor
 final class ClipboardPasteCoordinator {
+    enum Submission { case posted, requiresNativeStability, failed }
     struct Environment {
         var now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
         var wait: () async throws -> Void = { try await Task.sleep(for: .milliseconds(15)) }
         var observe: @MainActor () -> ClipboardPasteObservation
-        var post: @MainActor () -> Bool
+        var post: @MainActor () -> Submission
     }
 
     private var activeRequest: String?
@@ -58,6 +68,7 @@ final class ClipboardPasteCoordinator {
         var readySince: TimeInterval?
         var targetWasForeground = false
         var lastInputReleased = false
+        var nativeStabilityRequired = false
         while environment.now() - started < 1.8 {
             guard !Task.isCancelled, activeRequest == requestID,
                   !retiredRequests.contains(requestID) else { return .cancelled }
@@ -69,6 +80,10 @@ final class ClipboardPasteCoordinator {
             guard observation.clipboardUnchanged else { return .clipboardChanged }
             guard observation.originalTargetUnchanged else { return .focusChanged }
             lastInputReleased = observation.inputReleased
+            if (observation.requiresNativeStability || !observation.focusProbeAvailable) && !nativeStabilityRequired {
+                nativeStabilityRequired = true
+                readySince = nil
+            }
             if let foreground = observation.foregroundPID {
                 if foreground == targetPID { targetWasForeground = true }
                 else if foreground != hostPID || targetWasForeground { return .focusChanged }
@@ -80,12 +95,20 @@ final class ClipboardPasteCoordinator {
                 // AX-less apps retain the native key window restored by orderOut.
                 // Give that fallback a longer stable interval, rather than rejecting
                 // Qt/custom controls which do not expose an accessibility focus tree.
-                let interval: TimeInterval = observation.focusProbeAvailable ? 0.06 : 0.18
+                let interval: TimeInterval = nativeStabilityRequired ? 0.18 : 0.06
                 if environment.now() - readySince! >= interval {
                     guard activeRequest == requestID, !Task.isCancelled else { return .cancelled }
                     // There is no delivery acknowledgement: never automatically try
                     // another transport after posting, which can paste twice.
-                    return environment.post() ? .posted : .eventFailure
+                    switch environment.post() {
+                    case .posted: return .posted
+                    case .failed: return .eventFailure
+                    case .requiresNativeStability:
+                        // Final AX preflight lost its enhancement before any event was
+                        // sent. Continue this request's native settling, never retry input.
+                        nativeStabilityRequired = true
+                        readySince = nil
+                    }
                 }
             } else { readySince = nil }
             do { try await environment.wait() } catch { return .cancelled }

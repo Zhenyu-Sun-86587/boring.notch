@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 extension Notification.Name {
     static let clipboardPasteRequested = Notification.Name("ClipboardPasteRequested")
     static let clipboardDismissRequested = Notification.Name("ClipboardDismissRequested")
+    static let clipboardCopyFailed = Notification.Name("ClipboardCopyFailed")
 }
 
 /// AppKit pasteboard access stays on the main actor; all persistence and image decoding are isolated.
@@ -28,6 +29,7 @@ final class ClipboardStore: ObservableObject {
     @Published private(set) var busy = false
     @Published private(set) var pasting = false
     @Published private(set) var needsReadAccess = false
+    @Published private(set) var needsPasteAccess = false
     @Published private(set) var readDenied = false
     @Published private(set) var requestingPermissions = false
     @Published private(set) var enabled: Bool {
@@ -52,7 +54,10 @@ final class ClipboardStore: ObservableObject {
         didSet { UserDefaults.standard.set(excludedApps, forKey: "island.clipboardExcludedApps") }
     }
     private let history: ClipboardHistory
-    private let pasteboard = NSPasteboard.general
+    private let pasteboard: NSPasteboard
+    private let notifications: NotificationCenter
+    private let loadPayload: (String) async throws -> ClipboardPayload
+    private let writePasteboard: ([NSPasteboardItem]) -> Bool
     private var timer: Timer?
     private var changeCount: Int
     private var started = false
@@ -75,16 +80,26 @@ final class ClipboardStore: ObservableObject {
     private let supportedTypes = Set(["public.utf8-plain-text", "public.utf16-external-plain-text", "public.rtf", "public.html",
                                      "public.url", "public.file-url", "public.png", "public.tiff", "public.jpeg", "com.compuserve.gif", "public.heic"])
 
-    private init() {
-        let defaults = UserDefaults.standard
+    init(history: ClipboardHistory? = nil, pasteboard: NSPasteboard = .general,
+         defaults: UserDefaults = .standard, notifications: NotificationCenter = .default,
+         loadPayload: ((String) async throws -> ClipboardPayload)? = nil,
+         writePasteboard: (([NSPasteboardItem]) -> Bool)? = nil) {
+        self.pasteboard = pasteboard
+        self.notifications = notifications
         enabled = defaults.bool(forKey: "island.clipboardEnabled")
         retentionDays = max(1, defaults.object(forKey: "island.clipboardRetentionDays") as? Int ?? 7)
         maximumCount = max(20, defaults.object(forKey: "island.clipboardMaximumCount") as? Int ?? 200)
         diskMegabytes = max(32, defaults.object(forKey: "island.clipboardDiskMB") as? Int ?? 256)
         excludedApps = defaults.string(forKey: "island.clipboardExcludedApps") ?? ""
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        history = ClipboardHistory(directory: support.appendingPathComponent("boringNotch/Clipboard", isDirectory: true))
-        changeCount = NSPasteboard.general.changeCount
+        let history = history ?? ClipboardHistory(directory: support.appendingPathComponent("boringNotch/Clipboard", isDirectory: true))
+        self.history = history
+        self.loadPayload = loadPayload ?? { try await history.payload(id: $0) }
+        self.writePasteboard = writePasteboard ?? { objects in
+            pasteboard.clearContents()
+            return pasteboard.writeObjects(objects)
+        }
+        changeCount = pasteboard.changeCount
         thumbnailCache.countLimit = 24
         thumbnailCache.totalCostLimit = 12 * 1_024 * 1_024
     }
@@ -115,7 +130,7 @@ final class ClipboardStore: ObservableObject {
     }
 
     func dismiss() {
-        NotificationCenter.default.post(name: .clipboardDismissRequested, object: nil,
+        notifications.post(name: .clipboardDismissRequested, object: nil,
                                         userInfo: ["sessionID": sessionID.uuidString])
     }
     private var limits: ClipboardHistoryLimits {
@@ -153,6 +168,7 @@ final class ClipboardStore: ObservableObject {
     }
     func reportPasteError(_ value: String) { message = value }
     func clearMessage() { message = nil }
+    func setPasteAccessNeeded(_ value: Bool) { needsPasteAccess = value }
     func finishPaste(sessionID: String) {
         if sessionID == sessionGeneration.uuidString { pasting = false }
     }
@@ -340,7 +356,7 @@ final class ClipboardStore: ObservableObject {
         guard !busy, !pasting, !locked else { return }
         busy = true
         let generation = sessionGeneration
-        let target = paste ? ClipboardPresentation.shared.applicationForPaste(sessionID: generation) : nil
+        let initialChangeCount = pasteboard.changeCount
         let actionID = UUID()
         copyActionID = actionID
         copyTask = Task {
@@ -348,26 +364,7 @@ final class ClipboardStore: ObservableObject {
                 if copyActionID == actionID { busy = false; copyTask = nil; copyActionID = nil }
             }
             do {
-                var targetToken: String?
-                if paste {
-                    guard let target else {
-                        ClipboardPermissionController.shared.explainPasteFailure(.snapshotUnavailable, copied: false)
-                        return
-                    }
-                    guard !target.isTerminated else {
-                        ClipboardPermissionController.shared.explainPasteFailure(.targetUnavailable, copied: false)
-                        return
-                    }
-                    guard await ClipboardPermissionController.shared.ensurePasteAccess() else { return }
-                    guard !Task.isCancelled, !locked, sessionGeneration == generation else { return }
-                    targetToken = await ClipboardPresentation.shared.targetToken(for: target.processIdentifier)
-                    guard !Task.isCancelled, !locked, sessionGeneration == generation else { return }
-                    guard targetToken != nil else {
-                        ClipboardPermissionController.shared.explainPasteFailure(.snapshotUnavailable, copied: false)
-                        return
-                    }
-                }
-                let payload = try await history.payload(id: record.id)
+                let payload = try await loadPayload(record.id)
                 guard !Task.isCancelled, !locked, sessionGeneration == generation else { return }
                 let objects = try payload.items.map { item -> NSPasteboardItem in
                     let object = NSPasteboardItem()
@@ -395,25 +392,34 @@ final class ClipboardStore: ObservableObject {
                 }
                 // End the file scope after the receiving app has time to consume file references.
                 scheduleScopeRelease()
-                pasteboard.clearContents()
-                guard pasteboard.writeObjects(objects) else { throw ClipboardHistoryError.missing }
+                guard pasteboard.changeCount == initialChangeCount else {
+                    reportCopyFailure("剪贴板已被其他复制操作更改，已取消本次选择。", generation: generation)
+                    return
+                }
+                guard writePasteboard(objects) else { throw ClipboardHistoryError.missing }
                 changeCount = pasteboard.changeCount
                 message = nil
+                // Copy always completes before focus, helper or permission checks. The
+                // presenter owns the latched destination and an optional AX enhancement.
                 if paste {
-                    guard let target, !target.isTerminated else {
-                        message = "已复制，请在目标应用中粘贴。"
-                        NotificationCenter.default.post(name: .clipboardDismissRequested, object: nil, userInfo: ["sessionID": generation.uuidString])
-                        return
-                    }
                     pasting = true
-                    NotificationCenter.default.post(name: .clipboardPasteRequested, object: nil,
-                                                    userInfo: ["targetPID": Int(target.processIdentifier), "sessionID": generation.uuidString,
-                                                               "changeCount": changeCount, "targetToken": targetToken ?? ""])
+                    notifications.post(name: .clipboardPasteRequested, object: nil,
+                                       userInfo: ["sessionID": generation.uuidString, "changeCount": changeCount])
                 } else {
-                    NotificationCenter.default.post(name: .clipboardDismissRequested, object: nil, userInfo: ["sessionID": generation.uuidString])
+                    notifications.post(name: .clipboardDismissRequested, object: nil,
+                                       userInfo: ["sessionID": generation.uuidString])
                 }
-            } catch { scheduleScopeRelease(); message = error.localizedDescription }
+            } catch {
+                scheduleScopeRelease()
+                guard !Task.isCancelled, !locked, sessionGeneration == generation, copyActionID == actionID else { return }
+                reportCopyFailure(error.localizedDescription, generation: generation)
+            }
         }
+    }
+    private func reportCopyFailure(_ value: String, generation: UUID) {
+        message = value
+        notifications.post(name: .clipboardCopyFailed, object: nil,
+                           userInfo: ["sessionID": generation.uuidString, "message": value])
     }
     private func cancelCopyTask() {
         copyActionID = nil
