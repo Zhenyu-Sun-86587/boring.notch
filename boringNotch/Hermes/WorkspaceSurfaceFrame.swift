@@ -1,8 +1,8 @@
 import Foundation
 import SwiftUI
 
-/// Content has its final layout while the shell reveals it from top-center. A prepared, stable
-/// window viewport contains the entire spring, avoiding a second AppKit resize animation.
+/// All tabs use a single presentation rectangle inside a stable window viewport.
+/// Its content proposal, clipping path, opaque background and shadow advance together.
 struct WorkspaceSurfaceGeometry: Equatable {
     let visibleSize: CGSize
     let contentSize: CGSize
@@ -32,11 +32,20 @@ struct WorkspaceSurfaceFrame<WindowBridge: View>: AnimatableModifier {
     let nativeWindowSize: CGSize
     let windowEnvelopeSize: CGSize
     let shadowPadding: CGFloat
+    var topCornerRadius: CGFloat = 6
+    var bottomCornerRadius: CGFloat = 14
+    var shadowOpacity: CGFloat = 0
     @ViewBuilder var windowBridge: (CGSize) -> WindowBridge
 
-    var animatableData: AnimatablePair<CGFloat, CGFloat> {
-        get { AnimatablePair(presentationSize.width, presentationSize.height) }
-        set { presentationSize = CGSize(width: newValue.first, height: newValue.second) }
+    var animatableData: AnimatablePair<AnimatablePair<CGFloat, CGFloat>, AnimatablePair<AnimatablePair<CGFloat, CGFloat>, CGFloat>> {
+        get { .init(.init(presentationSize.width, presentationSize.height),
+                    .init(.init(topCornerRadius, bottomCornerRadius), shadowOpacity)) }
+        set {
+            presentationSize = CGSize(width: newValue.first.first, height: newValue.first.second)
+            topCornerRadius = newValue.second.first.first
+            bottomCornerRadius = newValue.second.first.second
+            shadowOpacity = newValue.second.second
+        }
     }
 
     func body(content: Content) -> some View {
@@ -46,16 +55,19 @@ struct WorkspaceSurfaceFrame<WindowBridge: View>: AnimatableModifier {
         Group {
             if enabled {
                 content
-                    .frame(width: geometry.contentSize.width, height: geometry.contentSize.height, alignment: .top)
                     .frame(width: geometry.visibleSize.width, height: geometry.visibleSize.height, alignment: .top)
-                    .clipped()
+                    .clipShape(NotchShape(topCornerRadius: topCornerRadius, bottomCornerRadius: bottomCornerRadius))
+                    .background {
+                        NotchShape(topCornerRadius: topCornerRadius, bottomCornerRadius: bottomCornerRadius)
+                            .fill(.black)
+                            .shadow(color: .black.opacity(Double(max(0, min(1, shadowOpacity)))), radius: 6)
+                    }
             } else {
                 content
             }
         }
-        // This representable remains at the same identity through opening, closing and tab changes.
-        // The transparent viewport expands before content needs it and remains stable through the
-        // morph. It is released by the caller only after closing/native-tab animation has settled.
+        // The representable keeps its identity. Production supplies the same prepared viewport
+        // for every tab and closed state; no timed canvas release or second window animation.
         .background { windowBridge(enabled ? geometry.canvasSize : nativeWindowSize) }
     }
 }
@@ -63,4 +75,21 @@ struct WorkspaceSurfaceFrame<WindowBridge: View>: AnimatableModifier {
 struct WorkspaceClosedSizePreference: PreferenceKey {
     static var defaultValue: CGSize { .zero }
     static func reduce(value: inout CGSize, nextValue: () -> CGSize) { value = nextValue() }
+}
+
+struct WorkspaceSurfaceAnimationKey: Equatable {
+    let size: CGSize
+    let open: Bool
+    let shadow: Bool
+}
+
+struct WorkspaceSurfaceMeasurement: Equatable {
+    enum Kind { case closed, compact, inactive }
+    let kind: Kind
+    let size: CGSize
+}
+
+struct WorkspaceSurfaceMeasurementPreference: PreferenceKey {
+    static var defaultValue: WorkspaceSurfaceMeasurement { .init(kind: .inactive, size: .zero) }
+    static func reduce(value: inout WorkspaceSurfaceMeasurement, nextValue: () -> WorkspaceSurfaceMeasurement) { value = nextValue() }
 }

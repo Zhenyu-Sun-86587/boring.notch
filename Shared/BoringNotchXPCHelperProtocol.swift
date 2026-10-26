@@ -47,8 +47,12 @@ final class BNLunarBrightnessEvent: NSObject, NSSecureCoding {
     func migrateLegacyAppBundle(from sourcePath: String, to destinationPath: String, with reply: @escaping (Bool) -> Void)
     func requestAccessibilityAuthorization()
     func ensureAccessibilityAuthorization(_ promptIfNeeded: Bool, with reply: @escaping (Bool) -> Void)
+    func clipboardPasteAccess(with reply: @escaping (Data) -> Void)
+    func requestClipboardPasteAuthorization(_ permission: String)
+    func captureClipboardTarget(_ targetPID: Int32, with reply: @escaping (Data?) -> Void)
+    func releaseClipboardTarget(_ token: String)
     func pasteClipboard(toProcessIdentifier targetPID: Int32, hostProcessIdentifier hostPID: Int32,
-                        pasteboardChangeCount: Int, requestID: String, with reply: @escaping (String) -> Void)
+                        pasteboardChangeCount: Int, targetToken: String?, requestID: String, with reply: @escaping (String) -> Void)
     func cancelClipboardPaste(_ requestID: String)
     func currentKeyboardBrightness(with reply: @escaping (NSNumber?) -> Void)
     func setKeyboardBrightness(_ value: Float, with reply: @escaping (Bool) -> Void)

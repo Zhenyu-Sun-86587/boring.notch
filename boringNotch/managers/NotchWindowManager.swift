@@ -124,6 +124,7 @@ final class NotchWindowManager {
 
         if shouldCleanupMulti {
             for (uuid, context) in contexts {
+                context.viewModel.close(force: true)
                 context.window?.close()
                 if let window = context.window {
                     NotchSpaceManager.shared.notchSpace.windows.remove(window)
@@ -132,6 +133,7 @@ final class NotchWindowManager {
                 contexts.removeValue(forKey: uuid)
             }
         } else {
+            primaryViewModel.close(force: true)
             primaryDragDetector?.stopMonitoring()
             primaryDragDetector = nil
             if let window = primaryWindow {
@@ -150,7 +152,10 @@ final class NotchWindowManager {
     }
 
     private func createBoringNotchWindow(for screen: NSScreen, with viewModel: BoringViewModel) -> NSWindow {
-        let rect = NSRect(x: 0, y: 0, width: windowSize.width, height: windowSize.height)
+        let viewport = IslandViewportLayout.size(screenUUID: screen.displayUUID)
+        let rect = NSRect(x: screen.frame.midX - viewport.width / 2,
+                          y: screen.frame.maxY - viewport.height,
+                          width: viewport.width, height: viewport.height)
         let styleMask: NSWindow.StyleMask = [.borderless, .nonactivatingPanel, .utilityWindow, .hudWindow]
 
         let window = BoringNotchSkyLightWindow(contentRect: rect, styleMask: styleMask, backing: .buffered, defer: false)
@@ -193,12 +198,11 @@ final class NotchWindowManager {
             window.alphaValue = 0
         }
 
-        let screenFrame = screen.frame
-        window.setFrameOrigin(
-            NSPoint(
-                x: screenFrame.origin.x + (screenFrame.width / 2) - window.frame.width / 2,
-                y: screenFrame.origin.y + screenFrame.height - window.frame.height
-            ))
+        let viewport = IslandViewportLayout.size(screenUUID: screen.displayUUID)
+        let frame = NSRect(x: screen.frame.midX - viewport.width / 2,
+                           y: screen.frame.maxY - viewport.height,
+                           width: viewport.width, height: viewport.height)
+        if window.frame != frame { window.setFrame(frame, display: false) }
         window.alphaValue = 1
     }
 
@@ -209,6 +213,7 @@ final class NotchWindowManager {
 
             // Remove windows for screens that no longer exist
             for uuid in contexts.keys where !currentScreenUUIDs.contains(uuid) {
+                contexts[uuid]?.viewModel.close(force: true)
                 if let window = contexts[uuid]?.window {
                     window.close()
                     NotchSpaceManager.shared.notchSpace.windows.remove(window)
@@ -391,13 +396,10 @@ final class NotchWindowManager {
         guard Defaults[.boringShelf] || HermesStore.shared.capturesNotchDrops else { return }
         guard let uuid = screen.displayUUID else { return }
 
-        let coordinator = BoringViewCoordinator.shared
         if Defaults[.displayMode] == .allDisplays, let viewModel = contexts[uuid]?.viewModel {
-            coordinator.currentView = HermesStore.shared.capturesNotchDrops ? .hermes : .shelf
-            viewModel.open()
+            viewModel.open(tab: HermesStore.shared.capturesNotchDrops ? .hermes : .shelf)
         } else if Defaults[.displayMode] != .allDisplays, let windowScreen = primaryWindow?.screen, screen == windowScreen {
-            coordinator.currentView = HermesStore.shared.capturesNotchDrops ? .hermes : .shelf
-            primaryViewModel.open()
+            primaryViewModel.open(tab: HermesStore.shared.capturesNotchDrops ? .hermes : .shelf)
         }
     }
 

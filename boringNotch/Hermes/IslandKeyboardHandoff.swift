@@ -62,9 +62,10 @@ extension BoringNotchSkyLightWindow {
 
     func releaseIslandKeyboard() {
         let token = beginIslandKeyboardHandoff()
-        DispatchQueue.main.async { [weak self] in
-            self?.endIslandKeyboardHandoff(token, restoreVisible: true)
-        }
+        // Ordinary tab/close release has no external paste work between these calls. Complete
+        // visibility restoration in this run-loop turn so WindowServer never presents a hidden
+        // frame. Explicit paste handoffs still keep their token until the target is ready.
+        endIslandKeyboardHandoff(token, restoreVisible: true)
     }
 
     /// External orderOut/close/lock invalidates queued restorations before they can reopen a panel.

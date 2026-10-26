@@ -16,6 +16,7 @@ final class BoringViewModel: NSObject, ObservableObject {
     let animationLibrary: BoringAnimations = .init()
     let animation: Animation?
     let dropInteraction = DropInteractionState()
+    let tabOwnerID = UUID()
 
     @Published private(set) var notchState: NotchState = .closed
 
@@ -40,6 +41,8 @@ final class BoringViewModel: NSObject, ObservableObject {
     }
 
     func destroy() {
+        let owner = tabOwnerID
+        Task { @MainActor in BoringViewCoordinator.shared.discardTabOwner(owner) }
         cancellables.forEach { $0.cancel() }
         cancellables.removeAll()
     }
@@ -173,8 +176,10 @@ final class BoringViewModel: NSObject, ObservableObject {
     }
 
     @discardableResult
-    func open() -> Bool {
-        guard !coordinator.firstLaunch, notchState != .open else { return false }
+    func open(tab: NotchViews? = nil) -> Bool {
+        guard !coordinator.firstLaunch else { return false }
+        coordinator.prepareTabForOpening(owner: tabOwnerID, requested: tab)
+        guard notchState != .open else { return false }
 
         self.notchSize = coordinator.currentView == .hermes
             ? HermesLayout.size(screenUUID: screenUUID, wide: HermesStore.shared.isWide) : openNotchSize
@@ -187,10 +192,14 @@ final class BoringViewModel: NSObject, ObservableObject {
         return true
     }
 
-    func close() {
+    func close(force: Bool = false) {
         // Do not close while a share picker or sharing service is active
-        if SharingStateManager.shared.preventNotchClose {
+        if SharingStateManager.shared.preventNotchClose && !force {
             return
+        }
+        if notchState == .open {
+            coordinator.recordClosedTab(owner: tabOwnerID)
+            coordinator.releaseKeyboard(onScreenUUID: screenUUID)
         }
         // The camera is on-demand: the notch closing always ends capture.
         // Intent clears too, so no recovery path can reopen it while closed.
@@ -204,13 +213,7 @@ final class BoringViewModel: NSObject, ObservableObject {
         }
         self.edgeAutoOpenActive = false
 
-        // Set the current view to shelf if it contains files and the user enables openShelfByDefault
-        // Otherwise, if the user has not enabled openLastShelfByDefault, set the view to home
-        if Defaults[.boringShelf] && !ShelfStateViewModel.shared.isEmpty && Defaults[.openShelfByDefault] {
-            coordinator.currentView = .shelf
-        } else if !coordinator.openLastTabByDefault {
-            coordinator.currentView = .home
-        }
+        // Keep the outgoing page intact for the close animation. Resolve defaults on next open.
     }
 
     func closeHello() {

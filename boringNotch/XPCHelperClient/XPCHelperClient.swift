@@ -227,7 +227,46 @@ final class XPCHelperClient: NSObject, ObservableObject {
         }
     }
 
-    func pasteClipboard(to targetPID: Int32, changeCount: Int, requestID: UUID) async -> ClipboardPasteResult {
+    func clipboardPasteAccess() async -> ClipboardPasteAccess? {
+        do {
+            let service = ensureRemoteService()
+            let data: Data = try await service.withContinuation { service, continuation in
+                service.clipboardPasteAccess { continuation.resume(returning: $0) }
+            }
+            let value = try JSONDecoder().decode(ClipboardPasteAccess.self, from: data)
+            notifyAuthorizationChange(value.accessibility)
+            helperAvailable = true; lastError = nil
+            return value
+        } catch { lastError = .transport(underlying: error); helperAvailable = false; return nil }
+    }
+
+    func requestClipboardPasteAuthorization(_ permission: ClipboardPastePermission) {
+        Task { @MainActor in
+            let service = ensureRemoteService()
+            do { try await service.withService { $0.requestClipboardPasteAuthorization(permission.rawValue) } }
+            catch { self.lastError = .transport(underlying: error) }
+        }
+    }
+
+    func captureClipboardTarget(_ targetPID: Int32) async -> ClipboardPasteTarget? {
+        do {
+            let service = ensureRemoteService()
+            let data: Data? = try await service.withContinuation { service, continuation in
+                service.captureClipboardTarget(targetPID) { continuation.resume(returning: $0) }
+            }
+            guard let data else { return nil }
+            return try JSONDecoder().decode(ClipboardPasteTarget.self, from: data)
+        } catch { lastError = .transport(underlying: error); helperAvailable = false; return nil }
+    }
+
+    func releaseClipboardTarget(_ token: String) {
+        Task { @MainActor in
+            let service = ensureRemoteService()
+            try? await service.withService { $0.releaseClipboardTarget(token) }
+        }
+    }
+
+    func pasteClipboard(to targetPID: Int32, changeCount: Int, targetToken: String? = nil, requestID: UUID) async -> ClipboardPasteResult {
         guard !Task.isCancelled else { return .cancelled }
         return await withTaskCancellationHandler {
             do {
@@ -235,7 +274,7 @@ final class XPCHelperClient: NSObject, ObservableObject {
                 let result: String = try await service.withContinuation { service, continuation in
                     service.pasteClipboard(toProcessIdentifier: targetPID,
                         hostProcessIdentifier: ProcessInfo.processInfo.processIdentifier,
-                        pasteboardChangeCount: changeCount, requestID: requestID.uuidString) { result in
+                        pasteboardChangeCount: changeCount, targetToken: targetToken, requestID: requestID.uuidString) { result in
                         continuation.resume(returning: result)
                     }
                 }

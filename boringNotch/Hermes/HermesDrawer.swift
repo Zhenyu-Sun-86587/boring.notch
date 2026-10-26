@@ -14,26 +14,36 @@ struct HermesDrawer: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
-                    if store.turns.isEmpty && store.answer.isEmpty && IslandSettings.string("hermesURL").isEmpty {
-                        Button("配置 Hermes", systemImage: "gearshape") {
-                            SettingsWindowController.shared.showIslandSettings()
+            ScrollViewReader { scroll in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 14) {
+                        if store.turns.isEmpty && store.answer.isEmpty && IslandSettings.string("hermesURL").isEmpty {
+                            Button("配置 Hermes", systemImage: "gearshape") {
+                                SettingsWindowController.shared.showIslandSettings()
+                            }
+                            .buttonStyle(.borderless)
+                            .foregroundStyle(.secondary)
                         }
-                        .buttonStyle(.borderless)
-                        .foregroundStyle(.secondary)
+                        ForEach(store.turns) { turn in
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text(turn.prompt).font(.callout).textSelection(.enabled)
+                                    .padding(10).background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                                    .frame(maxWidth: .infinity, alignment: .trailing)
+                                if !turn.assistant.isEmpty { richText(turn.assistant) }
+                                submissionStatus(turn)
+                            }
+                            .id(turn.id)
+                        }
+                        if store.isPreparingRequest {
+                            ProgressView("正在准备…").controlSize(.small).font(.caption)
+                        }
                     }
-                    ForEach(Array(store.turns.enumerated()), id: \.offset) { _, turn in
-                        Text(turn.prompt).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
-                        richText(turn.assistant)
-                    }
-                    if !store.answer.isEmpty && (store.isGenerating || store.turns.last?.assistant != store.answer) {
-                        richText(store.answer)
-                    }
-                    if store.isGenerating { ProgressView().controlSize(.small) }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 4)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 4)
+                .onChange(of: store.turns.last?.id) { _, id in
+                    if let id { scroll.scrollTo(id, anchor: .bottom) }
+                }
             }
             if !store.attachments.isEmpty || store.includesNote {
                 ScrollView(.horizontal) {
@@ -66,7 +76,6 @@ struct HermesDrawer: View {
                         store.send()
                         return .handled
                     }
-                    .disabled(store.isGenerating)
                 if store.isGenerating {
                     Button("停止", systemImage: "stop.fill") { store.stop() }
                         .labelStyle(.iconOnly).help("停止生成")
@@ -138,7 +147,28 @@ struct HermesDrawer: View {
 
     private var shouldFocusInput: Bool {
         drawerVisible && vm.notchState == .open && BoringViewCoordinator.shared.currentView == .hermes
-            && !store.isGenerating && !vm.isPopoverActive && !showingWidthControls
+            && !vm.isPopoverActive && !showingWidthControls
+    }
+
+    @ViewBuilder
+    private func submissionStatus(_ turn: HermesTranscript.Turn) -> some View {
+        switch turn.status {
+        case .thinking:
+            ProgressView("正在思考…").controlSize(.small).font(.caption)
+        case .responding:
+            ProgressView("正在生成…").controlSize(.small).font(.caption)
+        case .failed(let error):
+            HStack(alignment: .top) {
+                Text("生成失败：\(error)").textSelection(.enabled)
+                if store.canRetry(turn.id) { Button("重试") { store.retry(turn.id) } }
+            }.font(.caption).foregroundStyle(.secondary)
+        case .stopped:
+            HStack {
+                Text("已停止")
+                if store.canRetry(turn.id) { Button("重试") { store.retry(turn.id) } }
+            }.font(.caption).foregroundStyle(.secondary)
+        case .completed: EmptyView()
+        }
     }
 
     private func attachmentChip(name: String, icon: String, removeLabel: String, remove: @escaping () -> Void) -> some View {

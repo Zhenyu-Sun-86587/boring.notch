@@ -58,19 +58,67 @@ class BoringNotchXPCHelper: NSObject, BoringNotchXPCHelperProtocol {
     }
 
     @MainActor private static let clipboardPaster = ClipboardPasteCoordinator()
+    @MainActor private static let clipboardTargets = ClipboardPasteTargets()
+
+    @objc func clipboardPasteAccess(with reply: @escaping (Data) -> Void) {
+        let access = ClipboardPasteAccess(accessibility: AXIsProcessTrusted(), postEvents: CGPreflightPostEventAccess(),
+            processIdentifier: ProcessInfo.processInfo.processIdentifier, bundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+        reply((try? JSONEncoder().encode(access)) ?? Data())
+    }
+
+    @objc func requestClipboardPasteAuthorization(_ permission: String) {
+        DispatchQueue.main.async {
+            switch ClipboardPastePermission(rawValue: permission) {
+            case .accessibility: self.requestAccessibilityAuthorization()
+            case .postEvents: _ = CGRequestPostEventAccess()
+            case nil: break
+            }
+        }
+    }
+
+    @objc func captureClipboardTarget(_ targetPID: Int32, with reply: @escaping (Data?) -> Void) {
+        DispatchQueue.main.async {
+            let target = Self.clipboardTargets.capture(targetPID)
+            reply(target.flatMap { try? JSONEncoder().encode($0) })
+        }
+    }
+
+    @objc func releaseClipboardTarget(_ token: String) {
+        DispatchQueue.main.async { Self.clipboardTargets.release(token) }
+    }
 
     /// The host first orders its panel out. Verify the actual keyboard owner,
     /// physical key/button release and unchanged pasteboard before posting once.
     @objc func pasteClipboard(toProcessIdentifier targetPID: Int32, hostProcessIdentifier hostPID: Int32,
-                              pasteboardChangeCount: Int, requestID: String, with reply: @escaping (String) -> Void) {
+                              pasteboardChangeCount: Int, targetToken: String?, requestID: String, with reply: @escaping (String) -> Void) {
         // A noninteractive transport probe uses an invalid PID. It must not read
         // the pasteboard, inspect focus, prompt for access or post any event.
         guard targetPID > 0 else { reply(ClipboardPasteResult.targetUnavailable.rawValue); return }
         DispatchQueue.main.async {
             Task { @MainActor in
+                let access = ClipboardPasteAccess(accessibility: AXIsProcessTrusted(), postEvents: CGPreflightPostEventAccess(),
+                    processIdentifier: ProcessInfo.processInfo.processIdentifier, bundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+                guard access.accessibility else { reply(ClipboardPasteResult.unauthorized.rawValue); return }
+                guard access.postEvents else { reply(ClipboardPasteResult.postEventUnauthorized.rawValue); return }
+                guard let original = Self.clipboardTargets.record(targetToken, pid: targetPID) else {
+                    reply(ClipboardPasteResult.snapshotUnavailable.rawValue); return
+                }
+                defer { Self.clipboardTargets.release(original.descriptor.token) }
                 let systemWide = AXUIElementCreateSystemWide()
                 AXUIElementSetMessagingTimeout(systemWide, 0.05)
-                func observe() -> ClipboardPasteObservation {
+                var restoreAttempts = 0
+                var originalUnchanged = true
+                @MainActor func observe() -> ClipboardPasteObservation {
+                    let foreground = NSWorkspace.shared.frontmostApplication?.processIdentifier
+                    if foreground == targetPID {
+                        originalUnchanged = Self.clipboardTargets.originalTargetUnchanged(original)
+                        if originalUnchanged, restoreAttempts < 3,
+                           Self.clipboardTargets.canRestoreNow(original),
+                           restoreAttempts == 0 || !Self.clipboardTargets.inputReady(original) {
+                            originalUnchanged = Self.clipboardTargets.restore(original)
+                            restoreAttempts += 1
+                        }
+                    }
                     var focused: CFTypeRef?
                     let error = AXUIElementCopyAttributeValue(systemWide, kAXFocusedApplicationAttribute as CFString, &focused)
                     var focusedPID: pid_t?
@@ -83,40 +131,31 @@ class BoringNotchXPCHelper: NSObject, BoringNotchXPCHelperProtocol {
                         && ![CGKeyCode(36), 76, 9].contains { CGEventSource.keyState(.hidSystemState, key: $0) }
                         && !CGEventSource.buttonState(.hidSystemState, button: .left)
                     let session = CGSessionCopyCurrentDictionary() as? [String: Any]
-                    return ClipboardPasteObservation(authorized: AXIsProcessTrusted(),
+                    return ClipboardPasteObservation(authorized: access.accessibility, postEventAuthorized: access.postEvents,
                         unlocked: session != nil && session?["CGSSessionScreenIsLocked"] as? Bool != true,
                         targetAlive: targetPID > 0 && NSRunningApplication(processIdentifier: targetPID)?.isTerminated == false,
                         clipboardUnchanged: NSPasteboard.general.changeCount == pasteboardChangeCount,
-                        foregroundPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
+                        originalTargetUnchanged: originalUnchanged,
+                        foregroundPID: foreground,
                         focusedPID: focusedPID,
                         // Some Qt/custom applications expose no usable focus tree,
                         // including noValue/cannotComplete or a missing PID. An
                         // explicit different PID remains a firm focus mismatch.
                         focusProbeAvailable: focusedPID != nil,
+                        originalInputReady: foreground == targetPID && Self.clipboardTargets.inputReady(original),
                         inputReleased: released)
                 }
                 let result = await Self.clipboardPaster.perform(requestID: requestID, targetPID: targetPID, hostPID: hostPID,
                     environment: .init(observe: observe, post: {
                         let current = observe()
-                        guard current.authorized, current.unlocked, current.targetAlive,
+                        guard AXIsProcessTrusted(), CGPreflightPostEventAccess(), current.unlocked, current.targetAlive,
                               current.clipboardUnchanged, current.inputReleased, current.foregroundPID == targetPID,
-                              current.focusedPID == targetPID || !current.focusProbeAvailable,
-                              let source = CGEventSource(stateID: .combinedSessionState),
-                              let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
-                              let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else { return false }
-                        source.setLocalEventsFilterDuringSuppressionState([.permitLocalMouseEvents, .permitSystemDefinedEvents],
-                            state: .eventSuppressionStateSuppressionInterval)
-                        source.localEventsSuppressionInterval = 0.02
-                        // Include the device-side left Command bit used by native
-                        // clipboard managers; route through the normal session so
-                        // Chromium/Qt dispatch the shortcut to their active control.
-                        let command = CGEventFlags(rawValue: CGEventFlags.maskCommand.rawValue | 0x000008)
-                        down.flags = command
-                        up.flags = command
-                        down.post(tap: .cgSessionEventTap)
-                        up.post(tap: .cgSessionEventTap)
-                        return true
+                              current.originalTargetUnchanged, current.originalInputReady,
+                              current.focusedPID == targetPID || !current.focusProbeAvailable else { return false }
+                        return ClipboardPasteEvent.post(to: targetPID)
                     }))
+                NSLog("[clipboard] helper request=%@ result=%@ target=%d ax=%d post=%d window=%d element=%d restoreAttempts=%d", requestID, result.rawValue,
+                    targetPID, access.accessibility, access.postEvents, original.descriptor.hasWindow, original.descriptor.hasElement, restoreAttempts)
                 reply(result.rawValue)
             }
         }

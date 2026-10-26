@@ -4,6 +4,7 @@ import SwiftUI
 
 struct ClipboardDrawer: View {
     @ObservedObject private var store = ClipboardStore.shared
+    @ObservedObject private var presentation = ClipboardPresentation.shared
     @FocusState private var searchFocused: Bool
     @State private var rowFrames: [String: CGRect] = [:]
     @State private var viewportHeight: CGFloat = 0
@@ -124,11 +125,13 @@ struct ClipboardDrawer: View {
         .onKeyPress(.escape, phases: .down) { handle(.escape, press: $0) }
         .onAppear {
             store.start()
-            if store.keyboardSessionActive { focusSearch() }
         }
         .onChange(of: store.keyboardSessionActive) { _, value in
-            if value { focusSearch() } else { focusTask?.cancel(); searchFocused = false }
+            if !value { focusTask?.cancel(); searchFocused = false }
         }
+        .background(HermesInputFocusObserver(enabled: store.keyboardSessionActive && presentation.keyboardTargetReady,
+            isCurrent: { BoringViewCoordinator.shared.currentView == .clipboard },
+            setFocused: { value in if searchFocused != value { searchFocused = value } }))
         .onDisappear { focusTask?.cancel(); focusTask = nil; searchFocused = false; rowFrames = [:] }
     }
 

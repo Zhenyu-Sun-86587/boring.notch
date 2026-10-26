@@ -30,11 +30,8 @@ struct ContentView: View {
     @AppStorage("island.hermesWidth") private var hermesWidth = 640.0
     @AppStorage("island.hermesWideWidth") private var hermesWideWidth = 920.0
 
-    @State private var workspaceSurfaceRetained = false
-    @State private var workspaceWindowEnvelope = windowSize
-    @State private var workspaceSurfaceRelease: Task<Void, Never>?
-    @State private var lastWorkspaceContentSize = CGSize(width: 640, height: 420)
     @State private var measuredClosedSurfaceSize: CGSize = .zero
+    @State private var measuredCompactSurfaceSize: CGSize = .zero
     @State private var clipboardVisibilityOwner = UUID()
     @State private var hoverTask: Task<Void, Never>?
     @State private var isHovering: Bool = false
@@ -89,7 +86,7 @@ struct ContentView: View {
         return max(0, baseClosedTop * scaleFactor)
     }
 
-    private var currentNotchShape: NotchShape {
+    private var bottomCornerRadius: CGFloat {
         // Scale bottom corner radius for closed notch shape when scaling is enabled.
         let baseClosedBottom = cornerRadiusInsets.closed.bottom
         let bottomCorner: CGFloat
@@ -102,10 +99,7 @@ struct ContentView: View {
             bottomCorner = displayClosedNotchHeight > 0 ? baseClosedBottom : 0
         }
 
-        return NotchShape(
-            topCornerRadius: topCornerRadius,
-            bottomCornerRadius: bottomCorner
-        )
+        return bottomCorner
     }
 
     /// Closed-notch activities, newest first. A notification sits in front of
@@ -145,11 +139,6 @@ struct ContentView: View {
     /// lever anyway.
     private var workspaceIsOpen: Bool {
         vm.notchState == .open && (coordinator.currentView == .hermes || coordinator.currentView == .clipboard)
-    }
-
-    private var openNotchHeight: CGFloat? {
-        if notificationManager.activeNotification != nil && !workspaceIsOpen { return 132 }
-        return (coordinator.currentView == .hermes || coordinator.currentView == .clipboard) ? vm.notchSize.height : (Defaults[.compactMode] ? nil : vm.notchSize.height)
     }
 
     /// Compact mode drops the tab bar along with the tabs it switches
@@ -275,31 +264,38 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 let mainLayout = NotchLayout()
                     .frame(alignment: .top)
+                    .fixedSize(horizontal: vm.notchState == .closed,
+                               vertical: vm.notchState == .closed || nativeCompactIsOpen)
+                    .background {
+                        GeometryReader { geometry in
+                            Color.clear.preference(key: WorkspaceSurfaceMeasurementPreference.self,
+                                value: WorkspaceSurfaceMeasurement(kind: vm.notchState == .closed ? .closed : (nativeCompactIsOpen ? .compact : .inactive),
+                                    size: geometry.size))
+                        }
+                        .transaction { $0.animation = nil }
+                    }
                     .padding(
                         .horizontal,
                         vm.notchState == .open ? openedInsets.top : cornerRadiusInsets.closed.bottom
                     )
                     .padding([.horizontal, .bottom], vm.notchState == .open ? 12 : 0)
-                    .background {
-                        GeometryReader { geometry in
-                            Color.clear.preference(key: WorkspaceClosedSizePreference.self, value: geometry.size)
-                        }
-                    }
                     .modifier(WorkspaceSurfaceFrame(
                         presentationSize: workspaceSurfaceTarget,
-                        contentSize: workspaceContentSize,
-                        enabled: workspaceSurfaceEnabled,
+                        contentSize: workspaceSurfaceTarget,
+                        enabled: true,
                         nativeWindowSize: windowSize,
-                        windowEnvelopeSize: workspaceWindowEnvelope,
-                        shadowPadding: shadowPadding
+                        windowEnvelopeSize: IslandViewportLayout.size(screenUUID: vm.screenUUID),
+                        shadowPadding: shadowPadding,
+                        topCornerRadius: topCornerRadius,
+                        bottomCornerRadius: bottomCornerRadius,
+                        shadowOpacity: ((vm.notchState == .open || isHovering) && Defaults[.enableShadow]) ? 0.7 : 0
                     ) { canvasSize in
                         IslandWindowBridge(size: canvasSize,
                             wantsKeyboard: workspaceIsOpen,
                             permitsKeyboardWithoutHover: clipboard.keyboardSessionActive && clipboardPresentation.keyboardScreenUUID == vm.screenUUID,
-                            keyboardActivation: coordinator.currentView == .clipboard ? clipboard.sessionID.uuidString : "hermes")
+                            keyboardActivation: coordinator.currentView == .clipboard ? clipboard.sessionID.uuidString : "hermes",
+                            keyboardReady: clipboardPresentation.keyboardTargetReady)
                     })
-                    .background(.black)
-                    .clipShape(currentNotchShape)
                           .overlay(alignment: .top) {
                               displayClosedNotchHeight.isZero && vm.notchState == .closed ? nil
                         : Rectangle()
@@ -307,25 +303,15 @@ struct ContentView: View {
                             .frame(height: 1)
                             .padding(.horizontal, topCornerRadius)
                     }
-                    .shadow(
-                        color: ((vm.notchState == .open || isHovering) && Defaults[.enableShadow])
-                            ? .black.opacity(0.7) : .clear, radius: 6
-                    )
                     // Removed conditional bottom padding when using custom 0 notch to keep layout stable
                     .opacity((isNotchHeightZero && vm.notchState == .closed) ? 0.01 : 1)
 
                 mainLayout
-                    // alignment: .top matters here — without it this frame
-                    // defaults to centering, and shrinking the height for a
-                    // notification (openNotchHeight < vm.notchSize.height)
-                    // then pulls the visible top edge down by half the
-                    // difference instead of staying flush with the window's
-                    // top-anchored origin. That's what read as "the notch
-                    // sits a bit off the top of the screen."
-                    .frame(height: workspaceSurfaceEnabled ? nil : (vm.notchState == .open ? openNotchHeight : nil), alignment: .top)
                     .conditionalModifier(true) { view in
                         return view
-                            .animation(vm.notchState == .open ? StandardAnimations.open : StandardAnimations.close, value: vm.notchState)
+                            .animation(vm.notchState == .open ? StandardAnimations.open : StandardAnimations.close,
+                                value: WorkspaceSurfaceAnimationKey(size: workspaceSurfaceTarget, open: vm.notchState == .open,
+                                    shadow: (vm.notchState == .open || isHovering) && Defaults[.enableShadow]))
                             .animation(.smooth, value: gestureProgress)
                             // Outermost on purpose: it only fires when the
                             // closed-state content changes (the key is stable
@@ -400,25 +386,29 @@ struct ContentView: View {
                     Rectangle()
                         .fill(Color.black.opacity(0.01))
                         .frame(width: computedChinWidth, height: vm.chinHeight)
+                        .background(IslandInteractionRegionMarker())
                 }
             }
         }
         .padding(.bottom, 8)
-        .frame(maxWidth: workspaceSurfaceEnabled ? .infinity : windowSize.width,
-               maxHeight: workspaceSurfaceEnabled ? .infinity : windowSize.height, alignment: .top)
-        .onPreferenceChange(WorkspaceClosedSizePreference.self) { size in
-            // Native-only measurement never feeds the native layout: it only records the next
-            // workspace's closed starting shell. Workspace geometry has a fixed content proposal.
-            guard vm.notchState == .closed, !workspaceSurfaceEnabled,
-                  size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0,
-                  size != measuredClosedSurfaceSize else { return }
-            measuredClosedSurfaceSize = size
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .onPreferenceChange(WorkspaceSurfaceMeasurementPreference.self) { measurement in
+            let size = measurement.size
+            // Read intrinsic native content before animated padding or the shell frame. Including
+            // either would feed a spring's intermediate size back into its own destination.
+            guard size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 else { return }
+            if vm.notchState == .closed, measurement.kind == .closed {
+                let intrinsic = CGSize(width: size.width + 2 * cornerRadiusInsets.closed.bottom, height: size.height)
+                if intrinsic != measuredClosedSurfaceSize { measuredClosedSurfaceSize = intrinsic }
+            } else if nativeCompactIsOpen, measurement.kind == .compact {
+                let intrinsic = CGSize(width: 336 + 2 * openedInsets.top + 24, height: size.height + 12)
+                if intrinsic != measuredCompactSurfaceSize { measuredCompactSurfaceSize = intrinsic }
+            }
         }
         .onChange(of: coordinator.currentView) { old, new in
             syncClipboardVisibility()
             if coordinator.currentView != .clipboard { clipboardPresentation.endKeepingWindow() }
             updateIslandSize()
-            updateWorkspaceSurface()
         }
         .onChange(of: hermesWidth) { updateIslandSize() }
         .onChange(of: vm.screenUUID) { syncClipboardVisibility(); updateIslandSize() }
@@ -428,13 +418,6 @@ struct ContentView: View {
         .onChange(of: vm.notchState) { _, state in
             syncClipboardVisibility()
             updateIslandSize()
-            updateWorkspaceSurface()
-        }
-        .onChange(of: vm.notchSize) { _, size in
-            if workspaceIsOpen {
-                lastWorkspaceContentSize = size
-                expandWorkspaceEnvelope(to: size)
-            }
         }
         .ignoresSafeArea(.all)
         .compositingGroup()
@@ -444,12 +427,12 @@ struct ContentView: View {
             anchor: .top
         )
         .animation(.smooth, value: gestureProgress)
-        .background(dragDetector)
+        .background(alignment: .top) { dragDetector }
         .preferredColorScheme(.dark)
         .environmentObject(vm)
-        .onAppear { syncClipboardVisibility(); updateWorkspaceSurface() }
+        .onAppear { syncClipboardVisibility() }
         .onDisappear {
-            workspaceSurfaceRelease?.cancel()
+            clipboardPresentation.updateKeyboardTargetVisibility(owner: clipboardVisibilityOwner, visible: false)
             clipboardPresentation.updateVisibility(owner: clipboardVisibilityOwner, screenUUID: nil, visible: false)
         }
         .onChange(of: dropInteraction.anyDropZoneTargeting) { _, isTargeted in
@@ -457,9 +440,7 @@ struct ContentView: View {
 
             if isTargeted {
                 if (Defaults[.boringShelf] || hermes.capturesNotchDrops) && vm.notchState == .closed {
-                    if doOpen() {
-                        coordinator.currentView = hermes.capturesNotchDrops ? .hermes : .shelf
-                    }
+                    doOpen(tab: hermes.capturesNotchDrops ? .hermes : .shelf)
                 }
                 return
             }
@@ -482,67 +463,45 @@ struct ContentView: View {
     }
 
     private func syncClipboardVisibility() {
+        clipboardPresentation.updateKeyboardTargetVisibility(owner: clipboardVisibilityOwner, visible: workspaceIsOpen)
         clipboardPresentation.updateVisibility(owner: clipboardVisibilityOwner, screenUUID: vm.screenUUID,
             visible: vm.notchState == .open && coordinator.currentView == .clipboard)
     }
 
-    private var workspaceSurfaceEnabled: Bool { workspaceIsOpen || workspaceSurfaceRetained }
+    private var nativeCompactIsOpen: Bool {
+        vm.notchState == .open && !workspaceIsOpen && Defaults[.compactMode]
+    }
 
     private var workspaceSurfaceTarget: CGSize {
-        if vm.notchState == .open { return vm.notchSize }
+        if vm.notchState == .open {
+            switch coordinator.currentView {
+            case .hermes: return HermesLayout.size(screenUUID: vm.screenUUID, wide: hermes.isWide)
+            case .clipboard: return ClipboardLayout.size(screenUUID: vm.screenUUID)
+            default:
+                if notificationManager.activeNotification != nil { return CGSize(width: 640, height: 132) }
+                if nativeCompactIsOpen {
+                    return CGSize(width: 336 + 2 * openedInsets.top + 24,
+                        height: measuredCompactSurfaceSize.height > 0 ? measuredCompactSurfaceSize.height : openNotchSize.height)
+                }
+                return openNotchSize
+            }
+        }
         if measuredClosedSurfaceSize.width > 0 { return measuredClosedSurfaceSize }
         return CGSize(width: computedChinWidth + 8, height: displayClosedNotchHeight)
     }
 
-    private var workspaceContentSize: CGSize {
-        vm.notchState == .open ? vm.notchSize : lastWorkspaceContentSize
-    }
-
     private var openedBodyTransition: AnyTransition {
-        if workspaceSurfaceEnabled { return .opacity }
-        return .scale(scale: 0.8, anchor: .top).combined(with: .opacity).animation(.smooth(duration: 0.35))
-    }
-
-    private func updateWorkspaceSurface() {
-        workspaceSurfaceRelease?.cancel()
-        if workspaceIsOpen {
-            workspaceSurfaceRetained = true
-            lastWorkspaceContentSize = vm.notchSize
-            expandWorkspaceEnvelope(to: vm.notchSize)
-        } else if workspaceSurfaceRetained {
-            // Keep the presentation/window path through closing and switching back to a native tab.
-            // Native open/close springs use the same speed preference; no second window animation.
-            let speed = max(0.1, Defaults[.animationSpeedMultiplier])
-            let delay = Defaults[.enableOpeningAnimation] ? max(0.85, 0.85 / speed) : 0.05
-            workspaceSurfaceRelease = Task { @MainActor in
-                do { try await Task.sleep(for: .seconds(delay)) } catch { return }
-                guard !Task.isCancelled, !workspaceIsOpen else { return }
-                var transaction = Transaction(animation: nil)
-                transaction.disablesAnimations = true
-                withTransaction(transaction) {
-                    workspaceSurfaceRetained = false
-                    workspaceWindowEnvelope = windowSize
-                }
-            }
-        }
-    }
-
-    private func expandWorkspaceEnvelope(to size: CGSize) {
-        let envelope = WorkspaceSurfaceGeometry.preparedEnvelope(current: workspaceWindowEnvelope,
-            target: size, native: windowSize, shadowPadding: shadowPadding)
-        guard envelope != workspaceWindowEnvelope else { return }
-        var transaction = Transaction(animation: nil)
-        transaction.disablesAnimations = true
-        withTransaction(transaction) { workspaceWindowEnvelope = envelope }
+        // The continuous shell provides the reveal. A second opacity/scale transition creates
+        // overlapping pages and a separate shadow when their heights differ.
+        .identity
     }
 
     private func updateIslandSize() {
         guard vm.notchState == .open else { return }
-        withAnimation(workspaceSurfaceEnabled ? StandardAnimations.open : animationSpring) {
-            vm.notchSize = coordinator.currentView == .hermes
-                ? HermesLayout.size(screenUUID: vm.screenUUID, wide: hermes.isWide)
-                : (coordinator.currentView == .clipboard ? ClipboardLayout.size(screenUUID: vm.screenUUID) : openNotchSize)
-        }
+        let size = coordinator.currentView == .hermes
+            ? HermesLayout.size(screenUUID: vm.screenUUID, wide: hermes.isWide)
+            : (coordinator.currentView == .clipboard ? ClipboardLayout.size(screenUUID: vm.screenUUID) : openNotchSize)
+        if vm.notchSize != size { vm.notchSize = size }
     }
 
     @ViewBuilder
@@ -940,13 +899,13 @@ struct ContentView: View {
 
         if (Defaults[.boringShelf] || hermes.capturesNotchDrops) && vm.notchState == .closed && !shouldDisplayNowPlayingFallbackNotice {
             Color.clear
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(width: windowSize.width, height: windowSize.height)
                 .contentShape(Rectangle())
+                .background(IslandInteractionRegionMarker())
         .onDrop(of: [.fileURL, .url, .utf8PlainText, .plainText, .data], isTargeted: $dropInteraction.dragDetectorTargeting) { providers in
             dropInteraction.dropEvent = true
             if hermes.capturesNotchDrops {
-                coordinator.currentView = .hermes
-                doOpen()
+                doOpen(tab: .hermes)
                 hermes.stage(providers)
             } else {
                 ShelfStateViewModel.shared.load(providers)
@@ -963,10 +922,10 @@ struct ContentView: View {
 
 extension ContentView {
     @discardableResult
-    private func doOpen() -> Bool {
+    private func doOpen(tab: NotchViews? = nil) -> Bool {
         var didOpen = false
         withAnimation(animationSpring) {
-            didOpen = vm.open()
+            didOpen = vm.open(tab: tab)
         }
         return didOpen
     }

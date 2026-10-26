@@ -15,6 +15,23 @@ enum HermesLayout {
     }
 }
 
+/// Like the upstream native tabs, every surface animates inside one stable transparent window.
+/// Preparing the configured largest surface before ordering the panel avoids resizing AppKit's
+/// backing store during opening, tab changes, closing, or an interrupted spring.
+@MainActor
+enum IslandViewportLayout {
+    static func size(screenUUID: String?) -> CGSize {
+        size(compact: HermesLayout.size(screenUUID: screenUUID, wide: false),
+             wide: HermesLayout.size(screenUUID: screenUUID, wide: true))
+    }
+
+    static func size(compact: CGSize, wide: CGSize) -> CGSize {
+        let springRoom: CGFloat = 32
+        return CGSize(width: max(640, compact.width, wide.width) + springRoom,
+                      height: max(210, compact.height + 20, wide.height + 20) + springRoom)
+    }
+}
+
 /// Submit window changes after SwiftUI reconciliation, rather than resizing
 /// the NSHostingView's own window from inside updateNSView/viewDidMoveToWindow.
 struct IslandWindowBridge: NSViewRepresentable {
@@ -28,14 +45,16 @@ struct IslandWindowBridge: NSViewRepresentable {
     let wantsKeyboard: Bool
     var permitsKeyboardWithoutHover = false
     var keyboardActivation: String?
+    var keyboardReady = true
 
     @MainActor
-    final class Anchor: NSView {
+    final class Anchor: NSView, IslandInteractionRegionProviding {
         private struct Request {
             let size: CGSize
             let wantsKeyboard: Bool
             let permitsKeyboardWithoutHover: Bool
             let keyboardActivation: String?
+            let keyboardReady: Bool
         }
         private let ownerID = UUID()
         private var request: Request?
@@ -46,11 +65,12 @@ struct IslandWindowBridge: NSViewRepresentable {
         private var explicitKeyboardEntry = false
         private var explicitKeyboardDeadline: TimeInterval = 0
         private var keyboardObserver: NSObjectProtocol?
+        private var competingKeyboardObserver: NSObjectProtocol?
 
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
         func receive(size: CGSize, wantsKeyboard: Bool, permitsKeyboardWithoutHover: Bool,
-                     keyboardActivation: String? = nil) {
+                     keyboardActivation: String? = nil, keyboardReady: Bool = true) {
             if !wantsKeyboard, request?.wantsKeyboard == true { explicitKeyboardEntry = false }
             if !wantsKeyboard || request?.wantsKeyboard != true
                 || request?.keyboardActivation != keyboardActivation {
@@ -58,7 +78,7 @@ struct IslandWindowBridge: NSViewRepresentable {
             }
             request = Request(size: size, wantsKeyboard: wantsKeyboard,
                               permitsKeyboardWithoutHover: permitsKeyboardWithoutHover,
-                              keyboardActivation: keyboardActivation)
+                              keyboardActivation: keyboardActivation, keyboardReady: keyboardReady)
             schedule()
         }
 
@@ -66,7 +86,9 @@ struct IslandWindowBridge: NSViewRepresentable {
             super.viewDidMoveToWindow()
             if let previousWindow, previousWindow !== window { releaseKeyboard(in: previousWindow) }
             if let keyboardObserver { NotificationCenter.default.removeObserver(keyboardObserver) }
+            if let competingKeyboardObserver { NotificationCenter.default.removeObserver(competingKeyboardObserver) }
             keyboardObserver = nil
+            competingKeyboardObserver = nil
             explicitKeyboardEntry = false
             if let window {
                 keyboardObserver = NotificationCenter.default.addObserver(forName: IslandWindowBridge.keyboardRequest,
@@ -74,9 +96,22 @@ struct IslandWindowBridge: NSViewRepresentable {
                     MainActor.assumeIsolated {
                         guard let self, let window, self.window === window else { return }
                         self.explicitKeyboardEntry = true
-                        self.explicitKeyboardDeadline = ProcessInfo.processInfo.systemUptime + 2
+                        self.explicitKeyboardDeadline = ProcessInfo.processInfo.systemUptime + 5
                         self.attemptedKeyboardActivation = false
                         self.schedule()
+                    }
+                }
+                competingKeyboardObserver = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification,
+                    object: nil, queue: .main) { [weak self, weak window] notification in
+                    MainActor.assumeIsolated {
+                        guard let self, let window, self.window === window,
+                              self.request?.wantsKeyboard == true,
+                              let winner = notification.object as? NSWindow, winner !== window else { return }
+                        // A delayed target snapshot is not permission to steal focus from Settings.
+                        // Only a new explicit entry/input click may re-arm this session afterward.
+                        self.attemptedKeyboardActivation = true
+                        self.explicitKeyboardEntry = false
+                        self.explicitKeyboardDeadline = 0
                     }
                 }
             }
@@ -122,6 +157,7 @@ struct IslandWindowBridge: NSViewRepresentable {
             guard let panel = window as? BoringNotchSkyLightWindow,
                   !panel.isIslandKeyboardHandoffActive else { return }
             if request.wantsKeyboard && !panel.isIslandScreenLocked && panel.isVisible {
+                guard request.keyboardReady else { return }
                 // Admission happens once per explicit opening/tab/session. A
                 // streamed answer or layout update must not steal key status
                 // back from Settings, a permission alert or another app.
@@ -149,7 +185,9 @@ struct IslandWindowBridge: NSViewRepresentable {
             request = nil
             explicitKeyboardEntry = false
             if let keyboardObserver { NotificationCenter.default.removeObserver(keyboardObserver) }
+            if let competingKeyboardObserver { NotificationCenter.default.removeObserver(competingKeyboardObserver) }
             keyboardObserver = nil
+            competingKeyboardObserver = nil
             if let window = window ?? previousWindow { releaseKeyboard(in: window) }
             previousWindow = nil
         }
@@ -170,7 +208,7 @@ struct IslandWindowBridge: NSViewRepresentable {
     func updateNSView(_ view: Anchor, context: Context) {
         view.receive(size: size, wantsKeyboard: wantsKeyboard,
                      permitsKeyboardWithoutHover: permitsKeyboardWithoutHover,
-                     keyboardActivation: keyboardActivation)
+                     keyboardActivation: keyboardActivation, keyboardReady: keyboardReady)
     }
     static func dismantleNSView(_ view: Anchor, coordinator: ()) { view.invalidate() }
 }

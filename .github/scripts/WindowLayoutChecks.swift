@@ -216,6 +216,34 @@ extension NSScreen {
               "Locked window retained keyboard ownership")
     try check(window.resignRequests == 0 && window.orderOutRequests == 1 && window.orderingRequests == 0,
               "Focus was not released through real ordering, or a notification was called directly")
+
+    window.isIslandScreenLocked = false
+    window.fixtureVisible = true
+    new.receive(size: CGSize(width: 640, height: 440), wantsKeyboard: true,
+                permitsKeyboardWithoutHover: true, keyboardActivation: "pending-normal", keyboardReady: false)
+    let pendingFocus = window.focusRequests
+    try await pump([window])
+    try check(window.focusRequests == pendingFocus, "Pending target snapshot requested key before it was ready")
+    new.receive(size: CGSize(width: 640, height: 440), wantsKeyboard: true,
+                permitsKeyboardWithoutHover: true, keyboardActivation: "pending-normal", keyboardReady: true)
+    try await pump([window])
+    try check(window.focusRequests == pendingFocus + 1, "Delayed target readiness failed to admit the original entry")
+    window.fixtureLosesKey()
+    new.receive(size: CGSize(width: 640, height: 440), wantsKeyboard: true,
+                permitsKeyboardWithoutHover: true, keyboardActivation: "pending-settings", keyboardReady: false)
+    try await pump([window])
+    let settings = try panel()
+    defer { finish(settings) }
+    NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: settings)
+    new.receive(size: CGSize(width: 640, height: 440), wantsKeyboard: true,
+                permitsKeyboardWithoutHover: true, keyboardActivation: "pending-settings", keyboardReady: true)
+    try await pump([window])
+    try check(window.focusRequests == pendingFocus + 1 && !window.isKeyWindow,
+        "A target snapshot finishing after Settings became key stole its focus")
+    IslandWindowBridge.requestKeyboardFocus(in: window)
+    try await pump([window])
+    try check(window.focusRequests == pendingFocus + 2,
+        "A fresh explicit input action could not re-arm an entry cancelled by Settings")
     print("PASS production bridge: one key admission per entry, no refresh focus stealing, ownership, stale release and screen lock (focus intercepted)")
 }
 
@@ -251,6 +279,12 @@ extension NSScreen {
     window.endIslandKeyboardHandoff(old, restoreVisible: true)
     try check(window.orderingRequests == 2, "Replayed old token reordered the panel")
     window.releaseIslandKeyboard()
+    try check(window.isVisible && !window.isKeyWindow && !window.isIslandKeyboardHandoffActive
+        && !window.canBecomeKey, "Ordinary keyboard release left a hidden display frame or retained key eligibility")
+    let releasedOrders = window.orderingRequests
+    try await pump([window], allowsLogicalOrdering: true)
+    try check(window.isVisible && !window.isKeyWindow && window.orderingRequests == releasedOrders,
+        "Ordinary keyboard release scheduled a delayed hide/show or acquired keys")
     let replacement = window.beginIslandKeyboardHandoff()
     try await pump([window], allowsLogicalOrdering: true)
     try check(window.isIslandKeyboardHandoffActive && !window.isVisible,

@@ -7,6 +7,7 @@
 
 import Foundation
 import Defaults
+import IslandCore
 
 enum Style {
     case notch
@@ -18,12 +19,7 @@ enum NotchState {
     case open
 }
 
-enum NotchViews {
-    case home
-    case shelf
-    case hermes
-    case clipboard
-}
+typealias NotchViews = IslandTab
 
 enum DownloadIndicatorStyle: String, Defaults.Serializable {
     case progress = "Progress"

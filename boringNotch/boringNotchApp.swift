@@ -208,8 +208,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--island-smoke-test") {
             Task { @MainActor in
                 let trusted = await XPCHelperClient.shared.isAccessibilityAuthorized()
+                let pasteAccess = await XPCHelperClient.shared.clipboardPasteAccess()
                 let pasteTransport = await XPCHelperClient.shared.pasteClipboard(to: -1, changeCount: -1, requestID: UUID())
-                let helperOK = XPCHelperClient.shared.helperAvailable && XPCHelperClient.shared.lastError == nil
+                let helperOK = pasteAccess != nil && XPCHelperClient.shared.helperAvailable && XPCHelperClient.shared.lastError == nil
                 let result: [String: Any] = [
                     "status": helperOK ? "ready" : "helper-unavailable",
                     "version": Bundle.main.releaseVersionNumber ?? "",
@@ -218,6 +219,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     "accessibilityAuthorized": trusted,
                     "helperAvailable": helperOK,
                     "clipboardPasteTransport": pasteTransport == .targetUnavailable,
+                    "clipboardPostEventAuthorized": pasteAccess.map { $0.postEvents as Any } ?? NSNull(),
+                    "clipboardHelperPID": pasteAccess.map { $0.processIdentifier as Any } ?? NSNull(),
                     "calendarUsage": Bundle.main.object(forInfoDictionaryKey: "NSCalendarsFullAccessUsageDescription") as? String ?? "",
                     "reminderUsage": Bundle.main.object(forInfoDictionaryKey: "NSRemindersFullAccessUsageDescription") as? String ?? ""
                 ]
@@ -329,6 +332,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     var didOpen = false
                     await MainActor.run {
                         didOpen = viewModel.open()
+                        if didOpen && self.coordinator.currentView == .clipboard {
+                            ClipboardPresentation.shared.beginKeyboardSession(on: viewModel)
+                        }
                         if didOpen && self.coordinator.currentView == .hermes {
                             let panel = Defaults[.displayMode] == .allDisplays
                                 ? viewModel.screenUUID.flatMap { self.windowManager.windows[$0] }

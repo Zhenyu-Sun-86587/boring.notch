@@ -3,17 +3,21 @@ import Foundation
 enum ClipboardPasteResult: String, Sendable {
     case posted, cancelled, unauthorized, targetUnavailable, focusChanged
     case focusUnavailable, inputHeld, clipboardChanged, screenLocked, eventFailure
+    case postEventUnauthorized, snapshotUnavailable
 }
 
 /// Snapshot only: no clipboard contents or accessibility element text is retained.
 struct ClipboardPasteObservation: Sendable {
     var authorized = true
+    var postEventAuthorized = true
     var unlocked = true
     var targetAlive = true
     var clipboardUnchanged = true
+    var originalTargetUnchanged = true
     var foregroundPID: Int32?
     var focusedPID: Int32?
     var focusProbeAvailable = true
+    var originalInputReady = true
     var inputReleased = true
 }
 
@@ -24,8 +28,8 @@ final class ClipboardPasteCoordinator {
     struct Environment {
         var now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
         var wait: () async throws -> Void = { try await Task.sleep(for: .milliseconds(15)) }
-        var observe: () -> ClipboardPasteObservation
-        var post: () -> Bool
+        var observe: @MainActor () -> ClipboardPasteObservation
+        var post: @MainActor () -> Bool
     }
 
     private var activeRequest: String?
@@ -59,9 +63,11 @@ final class ClipboardPasteCoordinator {
                   !retiredRequests.contains(requestID) else { return .cancelled }
             let observation = environment.observe()
             guard observation.authorized else { return .unauthorized }
+            guard observation.postEventAuthorized else { return .postEventUnauthorized }
             guard observation.unlocked else { return .screenLocked }
             guard observation.targetAlive else { return .targetUnavailable }
             guard observation.clipboardUnchanged else { return .clipboardChanged }
+            guard observation.originalTargetUnchanged else { return .focusChanged }
             lastInputReleased = observation.inputReleased
             if let foreground = observation.foregroundPID {
                 if foreground == targetPID { targetWasForeground = true }
@@ -69,7 +75,7 @@ final class ClipboardPasteCoordinator {
             }
             let ownsFocus = observation.foregroundPID == targetPID
                 && (observation.focusedPID == targetPID || !observation.focusProbeAvailable)
-            if ownsFocus && observation.inputReleased {
+            if ownsFocus && observation.originalInputReady && observation.inputReleased {
                 if readySince == nil { readySince = environment.now() }
                 // AX-less apps retain the native key window restored by orderOut.
                 // Give that fallback a longer stable interval, rather than rejecting

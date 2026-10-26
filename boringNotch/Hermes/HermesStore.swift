@@ -12,10 +12,11 @@ struct StagedAttachment: Identifiable {
 @MainActor
 final class HermesStore: ObservableObject {
     static let shared = HermesStore()
-    @Published var input = ""
+    @Published var input = "" { didSet { if input != oldValue { draftRevision &+= 1 } } }
     @Published private(set) var answer = ""
-    @Published private(set) var turns: [Conversation.Turn] = []
+    @Published private(set) var turns: [HermesTranscript.Turn] = []
     @Published private(set) var isGenerating = false
+    @Published private(set) var isPreparingRequest = false
     @Published private(set) var isPreparingDrop = false
     @Published private(set) var isSaving = false
     @Published private(set) var attachments: [StagedAttachment] = []
@@ -23,7 +24,15 @@ final class HermesStore: ObservableObject {
     @Published var isWide = false
     @Published var capturesNotchDrops = false
     @Published var message: String?
-    private var conversation = Conversation()
+    private var transcript = HermesTranscript()
+    private var draftRevision: UInt = 0
+    private struct Submission {
+        let turnID: UUID
+        let prompt: String
+        let attachments: [StagedAttachment]
+        let note: NoteSelection?
+    }
+    private var retryableSubmission: Submission?
     private let client: any HermesStreaming
     private var generation: Task<Void, Never>?
     private var expiration: Task<Void, Never>?
@@ -52,13 +61,17 @@ final class HermesStore: ObservableObject {
         }
     }
     func stop() {
+        let id = generationID
         generationID = UUID(); generation?.cancel(); generation = nil
         flush?.cancel(); flush = nil
-        flushPending(); isGenerating = false
+        flushPending(id: id)
+        if transcript.finish(.stopped, request: id) { turns = transcript.turns }
+        isGenerating = false; isPreparingRequest = false
     }
     func clear() {
         dropID = UUID()
-        stop(); conversation.clear(); turns = []; answer = ""; input = ""; includesNote = false; isWide = false; message = nil
+        stop(); transcript.clear(); turns = []; answer = ""; input = ""; includesNote = false; isWide = false; message = nil
+        releaseSubmission()
         for attachment in attachments { deleteTemporary(attachment) }
         attachments = []
     }
@@ -98,7 +111,21 @@ final class HermesStore: ObservableObject {
             configuration = try IslandSettings.hermes()
             note = includesNote ? try SurfaceAccess.shared.snapshot() : nil
         } catch { message = error.localizedDescription; return }
-        isGenerating = true; message = nil
+        start(prompt: prompt, staged: staged, note: note, configuration: configuration, draft: draftRevision)
+    }
+    func canRetry(_ turnID: UUID) -> Bool {
+        !isGenerating && !isPreparingDrop && retryableSubmission?.turnID == turnID && turns.last?.canRetry == true
+    }
+    func retry(_ turnID: UUID) {
+        guard canRetry(turnID), !isPreparingDrop, let submission = retryableSubmission else { return }
+        do {
+            start(prompt: submission.prompt, staged: submission.attachments, note: submission.note,
+                  configuration: try IslandSettings.hermes(), retrying: turnID)
+        } catch { message = error.localizedDescription }
+    }
+    private func start(prompt: String, staged: [StagedAttachment], note: NoteSelection?,
+                       configuration: HermesConfiguration, draft: UInt? = nil, retrying turnID: UUID? = nil) {
+        isGenerating = true; isPreparingRequest = true; message = nil
         let id = UUID(); generationID = id
         generation = Task { [weak self] in
             guard let self else { return }
@@ -111,28 +138,55 @@ final class HermesStore: ObservableObject {
                 try Task.checkCancellation()
                 guard generationID == id else { return }
                 let userText = prompt + context
-                let messages = conversation.messages + [ChatMessage(role: "user", parts: [.text(userText)] + parts)]
-                answer = ""; pending = ""; receivedBytes = 0; started = true
+                let messages = transcript.messages + [ChatMessage(role: "user", parts: [.text(userText)] + parts)]
+                // Validate the complete request while its original draft/attachments are intact.
+                _ = try HermesClient.makeRequest(configuration: configuration, messages: messages)
+                guard let accepted = try transcript.accept(request: id, prompt: prompt, user: userText, retrying: turnID) else {
+                    throw IslandError.configuration("会话已变化，请重新发送。")
+                }
+                if turnID == nil { releaseSubmission() }
+                retryableSubmission = Submission(turnID: accepted, prompt: prompt, attachments: staged, note: note)
+                answer = ""; pending = ""; receivedBytes = 0
+                turns = transcript.turns
+                // A user may already be writing the next draft during asynchronous file preflight.
+                if let draft, draftRevision == draft { input = "" }
+                let stagedIDs = Set(staged.map(\.id))
+                attachments.removeAll { stagedIDs.contains($0.id) }
+                isPreparingRequest = false; started = true
                 try await client.stream(configuration: configuration, messages: messages) { [weak self] delta in
                     try await self?.receive(delta, id: id)
                 }
                 try Task.checkCancellation()
                 guard generationID == id else { return }
-                flushPending()
-                conversation.append(user: userText, assistant: answer, displayPrompt: prompt); turns = conversation.turns
-                input = ""
-                for attachment in attachments { deleteTemporary(attachment) }
-                attachments = []
+                flushPending(id: id)
+                guard !answer.isEmpty else { throw IslandError.configuration("服务未返回回答。") }
+                transcript.finish(.completed, request: id); turns = transcript.turns
+                releaseSubmission()
             } catch is CancellationError {
-                // Keep draft and partial output for an explicit retry.
+                if generationID == id {
+                    flushPending(id: id)
+                    if transcript.finish(.stopped, request: id) { turns = transcript.turns }
+                }
             } catch {
-                if generationID == id { message = error.localizedDescription }
+                if generationID == id {
+                    flushPending(id: id)
+                    if started {
+                        transcript.finish(.failed(error.localizedDescription), request: id); turns = transcript.turns
+                    } else { message = error.localizedDescription }
+                }
             }
             if generationID == id {
-                flush?.cancel(); flush = nil; flushPending(); isGenerating = false; generation = nil
+                flush?.cancel(); flush = nil; flushPending(id: id)
+                isGenerating = false; isPreparingRequest = false; generation = nil
                 if started && Conversation.needsWideLayout(answer) { isWide = true }
             }
         }
+    }
+    private func releaseSubmission() {
+        if let submission = retryableSubmission {
+            for attachment in submission.attachments { deleteTemporary(attachment) }
+        }
+        retryableSubmission = nil
     }
     private func receive(_ delta: String, id: UUID) throws {
         guard id == generationID else { throw CancellationError() }
@@ -142,12 +196,15 @@ final class HermesStore: ObservableObject {
         if flush == nil {
             flush = Task { [weak self] in
                 do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
-                self?.flushPending(); self?.flush = nil
+                guard let self, generationID == id else { return }
+                flushPending(id: id); flush = nil
             }
         }
     }
-    private func flushPending() {
+    private func flushPending(id: UUID) {
+        guard !pending.isEmpty else { return }
         answer += pending; pending = ""
+        if transcript.updateAnswer(answer, request: id) { turns = transcript.turns }
         if Conversation.needsWideLayout(answer) { isWide = true }
     }
     private static func prepare(_ attachments: [StagedAttachment]) async throws -> [ChatPart] {

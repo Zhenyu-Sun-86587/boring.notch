@@ -11,9 +11,14 @@ Hermes 构建关闭上游 Sparkle，使用本分支 Actions 的 Ad-hoc DMG / ZIP
 - **接口地址**：完整 OpenAI Chat Completions 流式地址，例如 `https://host/v1/chat/completions`。
 - **模型**：服务实际支持的模型 ID。
 - **API 密钥**：原始 token；应用添加 Bearer 前缀。无需认证时可留空。
+- **Cloudflare Access**：Client ID 与 Secret 成对填写，分别发送为 `CF-Access-Client-Id`、`CF-Access-Client-Secret`。
+- **自定义请求头**：按名称和值添加；请求头中的密钥也保存在钥匙串。
 
 连接信息初始留空，由使用者自行配置；密钥保存在钥匙串中，不写入日志或仓库。
 保存配置后新请求使用新配置，应用不会代为配置 Hermes 服务。
+发送前先检查配置、便签和附件；检查失败保留草稿。请求开始后，问题立即进入会话，
+输入栏清空并可继续写下一条。等待首字时显示“正在思考”，失败或停止保留该轮内容并可重试。
+后续请求只包含已成功完成的对话；重试不会重复增加同一条用户消息。
 
 ## 本地 Markdown 与宽度
 
@@ -25,6 +30,9 @@ Hermes 构建关闭上游 Sparkle，使用本分支 Actions 的 Ad-hoc DMG / ZIP
 - **保存到便签** 将回答作为复选任务追加到同一文件，多行内容缩进。
 - 写入使用文件协调、版本复查与原子替换，保留 UTF-8 BOM、既有内容和换行风格。
 - 设置页或抽屉宽度弹出菜单可调整标准/展宽宽度；按显示器可用空间限制尺寸。
+
+在 **灵动岛** 设置开启 **记住上一个标签页** 后，普通悬停与打开快捷键恢复上次关闭的标签，
+并在重启后保留。此选项优先于“暂存区有文件时默认打开”；剪贴板专用快捷键与拖入附件仍打开对应标签。
 
 监听文件和可访问的父目录，并使用 NSFilePresenter。单文件沙盒授权若不允许访问父目录，
 无法保证收到其他同步软件所有未协调的原子替换通知；实际发送仍重新读取，不复用旧上下文。
@@ -41,7 +49,7 @@ Hermes 构建关闭上游 Sparkle，使用本分支 Actions 的 Ad-hoc DMG / ZIP
 默认全局快捷键是 **⌘⇧V**，可在 **快捷方式** 页面修改，避免与 Raycast 等工具冲突。
 鼠标展开后也可直接选择剪贴板标签。快捷键打开时保持展开并聚焦搜索，不要求移动鼠标。
 
-- 上下键选择；Enter 粘贴到原应用；⌘Enter 仅复制；Esc 关闭。
+- 上下键选择；Enter 或单击项目粘贴到原输入框；⌘Enter 仅复制；Esc 关闭。
 - 文字、链接、富文本与图片保留本地历史，支持搜索、收藏、删除。
 - 图片保存 PNG/TIFF/JPEG 等实际原始表示，包含可用透明通道；缩略图仅用于预览。
 - 从 Finder 复制图片文件属于文件引用，与直接复制图像不同；原文件失效或授权失效时显示错误。
@@ -49,8 +57,12 @@ Hermes 构建关闭上游 Sparkle，使用本分支 Actions 的 Ad-hoc DMG / ZIP
 - 跳过机密、临时、自动生成及自身复制标记；支持排除应用；锁屏暂停采集。
 - 所有历史仅存本机，不自动发送到 Hermes，不访问网络。
 
-自动粘贴需要当前版本的系统控制/辅助功能授权，由非沙盒 XPC helper 发出粘贴按键；
-执行前复查原应用与锁屏状态。系统不回报目标应用是否接受了粘贴，因此仍需实际应用验收。
+自动粘贴分别检查执行进程的控制/辅助功能授权与按键发送权限；启用记录时另请求读取剪贴板。
+缺少权限时弹出对应授权或系统设置入口，失败会明确说明是权限、原输入位置变化还是按键投递问题。
+面板取得键盘前保存原应用、窗口和输入控件引用，不读取输入内容；关闭面板后恢复该控件，
+再次复查目标与锁屏状态，由非沙盒 XPC helper 向目标进程发送一次粘贴按键。
+授权后需返回目标输入框并重新打开剪贴板，不会把授权前的旧操作自动补发。
+系统不回报目标应用是否接受了粘贴，因此仍需实际应用验收。
 Ad-hoc 更新可能要求重新授权；仅复制历史项目不依赖自动粘贴权限。
 
 ## 自动检查
@@ -58,6 +70,10 @@ Ad-hoc 更新可能要求重新授权；仅复制历史项目不依赖自动粘�
 ```sh
 swift run --package-path Packages/IslandCore IslandCoreChecks
 python3 .github/scripts/test_island_stream.py
+python3 .github/scripts/test_hermes_submission.py
+python3 .github/scripts/test_clipboard_paste.py
+python3 .github/scripts/test_clipboard_native_event.py
+python3 .github/scripts/test_workspace_animation.py
 python3 .github/scripts/check_chinese_localization.py
 python3 -m unittest discover -s .github/scripts/tests -q
 ```
@@ -65,6 +81,10 @@ python3 -m unittest discover -s .github/scripts/tests -q
 核心夹具覆盖 SSE UTF-8 分片、取消、会话淘汰、任意文件名、BOM/CRLF、并发追加、同步原子替换、
 图片下采样，以及剪贴板原始图片/透明度、重启恢复、多条项目顺序、去重、并发写入、配额与过滤。
 中文审计覆盖应用拥有的源字符串与资源；保留品牌、URL、设备名称、用户内容、服务返回内容。
+提交夹具直接编译生产 HermesStore，以隔离的流与文件替身验证异步草稿生命周期。
+原生粘贴夹具使用无窗口的沙盒测试应用、生产 helper 与定向事件接收器，不访问真实剪贴板或前台输入；
+运行环境没有既有按键发送权限时记录 SKIP，不自动申请授权。收到测试按键不代表真实编辑器已接受粘贴。
+动画夹具在所有屏幕之外采样真实布局与渲染像素，检查轮廓、阴影、输入栏位置和透明区域命中范围。
 
 Actions 使用 Xcode 27.1 / ARM64，校验嵌套签名、架构、可执行权限，并运行成品启动/XPC 只读检查，
 再生成并验证 DMG。启动检查不读取真实剪贴板、不发起 Hermes 请求、不申请权限。

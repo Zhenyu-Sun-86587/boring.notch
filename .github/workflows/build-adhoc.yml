@@ -35,12 +35,20 @@ jobs:
         run: |
           swift run --package-path Packages/IslandCore -c release IslandCoreChecks
           python3 .github/scripts/test_island_stream.py
+      - name: Verify submitted Hermes messages and draft lifecycle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          python3 .github/scripts/test_hermes_submission.py 2>&1 | tee build/hermes-submission-report.txt
       - name: Verify paste sequencing without accessing the clipboard
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p build
           python3 .github/scripts/test_clipboard_paste.py 2>&1 | tee build/clipboard-paste-report.txt
+      - name: Verify native clipboard XPC and targeted event transport
+        run: python3 .github/scripts/test_clipboard_native_event.py
       - name: Verify native window resizing without displaying UI
         shell: bash
         run: |
@@ -110,6 +118,9 @@ jobs:
             build/ordered-window-checks/
             build/clipboard-paste-report.txt
             build/hermes-markdown-report.txt
+            build/hermes-submission-report.txt
+            build/clipboard-native-checks/
+            build/workspace-animation-frames/
           retention-days: 14
       - name: Upload build diagnostics
         if: always()
@@ -125,6 +136,9 @@ jobs:
             build/ordered-window-checks/
             build/clipboard-paste-report.txt
             build/hermes-markdown-report.txt
+            build/hermes-submission-report.txt
+            build/clipboard-native-checks/
+            build/workspace-animation-frames/
           if-no-files-found: ignore
           # Keep the resolved dependency graph with diagnostics for reproducibility.
       - name: Upload resolved package versions

@@ -9,6 +9,7 @@ import AppKit
 import Combine
 import Defaults
 import SwiftUI
+import IslandCore
 
 enum SneakContentType {
     case brightness
@@ -46,6 +47,8 @@ final class BoringViewCoordinator: ObservableObject {
     static let shared = BoringViewCoordinator()
 
     @Published var currentView: NotchViews = .home
+    @AppStorage("island.lastClosedTab") private var savedClosedTab = IslandTab.home.rawValue
+    private var tabMemory = NotchTabMemory(saved: nil)
     @Published var helloAnimationRunning: Bool = false
     private var osdEnableTask: Task<Void, Never>?
 
@@ -53,16 +56,7 @@ final class BoringViewCoordinator: ObservableObject {
     @AppStorage("musicLiveActivityEnabled") var musicLiveActivityEnabled: Bool = true
     @AppStorage("currentMicStatus") var currentMicStatus: Bool = true
 
-    @AppStorage("alwaysShowTabs") var alwaysShowTabs: Bool = true {
-        didSet {
-            if !alwaysShowTabs {
-                openLastTabByDefault = false
-                if ShelfStateViewModel.shared.isEmpty || !Defaults[.openShelfByDefault] {
-                    currentView = .home
-                }
-            }
-        }
-    }
+    @AppStorage("alwaysShowTabs") var alwaysShowTabs: Bool = true
 
     @AppStorage("openLastTabByDefault") var openLastTabByDefault: Bool = false {
         didSet {
@@ -96,6 +90,7 @@ final class BoringViewCoordinator: ObservableObject {
     private var uiEventCancellable: AnyCancellable?
 
     private init() {
+        tabMemory = NotchTabMemory(saved: savedClosedTab)
         // Perform migration from name-based to UUID-based storage
         if preferredScreenUUID == nil, let legacyName = legacyPreferredScreenName {
             // Try to find screen by name and migrate to UUID
@@ -188,7 +183,7 @@ final class BoringViewCoordinator: ObservableObject {
                 Task { @MainActor in
                     guard let self = self else { return }
                     if !change.newValue && self.currentView == .shelf {
-                        self.currentView = .home
+                        self.selectTab(.home)
                     }
                 }
             }
@@ -415,7 +410,43 @@ final class BoringViewCoordinator: ObservableObject {
         }
     }
 
+    func prepareTabForOpening(owner: UUID, requested: NotchViews? = nil) {
+        let next = tabMemory.open(owner: owner, current: currentView, requested: requested,
+            remember: openLastTabByDefault, preferShelf: Defaults[.openShelfByDefault],
+            shelfEnabled: Defaults[.boringShelf], shelfHasItems: !ShelfStateViewModel.shared.isEmpty)
+        selectTab(next)
+    }
+
+    func selectTab(_ tab: NotchViews) {
+        guard currentView != tab else { return }
+        if (currentView == .hermes || currentView == .clipboard) && tab != .hermes && tab != .clipboard {
+            releaseKeyboard()
+        }
+        currentView = tab
+    }
+
+    /// Release nonactivating-panel keyboard ownership before starting the next shell animation.
+    /// Ordering out after the state change can cancel SwiftUI's in-flight animation.
+    func releaseKeyboard(onScreenUUID screenUUID: String? = nil) {
+        for case let panel as BoringNotchSkyLightWindow in NSApp.windows {
+            guard !panel.isIslandKeyboardHandoffActive,
+                  screenUUID == nil || panel.screen?.displayUUID == screenUUID else { continue }
+            if panel.isKeyWindow { panel.releaseIslandKeyboard() }
+            else {
+                panel.allowsIslandKeyboard = false
+                panel.wantsKeyForTextInput = false
+                panel.islandKeyboardOwner = nil
+            }
+        }
+    }
+
+    func recordClosedTab(owner: UUID) {
+        if tabMemory.close(owner: owner, current: currentView) { savedClosedTab = tabMemory.lastClosed.rawValue }
+    }
+
+    func discardTabOwner(_ owner: UUID) { tabMemory.discard(owner: owner) }
+
     func showEmpty() {
-        currentView = .home
+        selectTab(.home)
     }
 }

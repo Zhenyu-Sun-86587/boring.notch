@@ -68,6 +68,24 @@ private struct Failure: Error { let reason: String }
         denied.sample = { _ in .init(authorized: false, foregroundPID: 100, focusedPID: 100) }
         try check(await run(denied) == .unauthorized && denied.posts == 0, "authorization failure never posts")
 
+        let postDenied = Fixture()
+        postDenied.sample = { _ in .init(postEventAuthorized: false, foregroundPID: 100, focusedPID: 100) }
+        try check(await run(postDenied) == .postEventUnauthorized && postDenied.posts == 0, "AX authorization alone never claims event-post permission")
+        let inputNotRestored = Fixture()
+        inputNotRestored.sample = { time in .init(foregroundPID: 100, focusedPID: 100, originalInputReady: time >= 0.3) }
+        try check(await run(inputNotRestored) == .posted && inputNotRestored.postedAt! >= 0.36, "frontmost app is insufficient until the original input is restored")
+        let otherWindow = Fixture()
+        otherWindow.sample = { _ in .init(originalTargetUnchanged: false, foregroundPID: 100, focusedPID: 100) }
+        try check(await run(otherWindow) == .focusChanged && otherWindow.posts == 0, "another window/editor cancels instead of receiving old content")
+
+        try check(ClipboardFocusRestoration.mayRestore(sameWindow: true, savedElementValid: true, relation: .ancestorContainer), "browser WebArea ancestor can restore the original field")
+        try check(ClipboardFocusRestoration.mayRestore(sameWindow: true, savedElementValid: true, relation: .missing), "temporary loss of focused element can restore the saved field")
+        try check(!ClipboardFocusRestoration.mayRestore(sameWindow: true, savedElementValid: true, relation: .differentControl), "a newly focused editor is never overridden")
+        try check(!ClipboardFocusRestoration.mayRestore(sameWindow: false, savedElementValid: true, relation: .original), "another window is never raised")
+        try check(!ClipboardFocusRestoration.mayRestore(sameWindow: true, savedElementValid: false, relation: .missing), "deleted editors cannot be restored")
+        try check(!ClipboardFocusRestoration.ready(sameWindow: true, relation: .ancestorContainer, capturedElementFocused: false), "restoration must finish before posting")
+        try check(ClipboardFocusRestoration.ready(sameWindow: true, relation: .ancestorContainer, capturedElementFocused: true), "AXFocused confirms a restored field despite container focus reporting")
+
         let focusTimeout = Fixture()
         focusTimeout.sample = { _ in .init(foregroundPID: 100, focusedPID: 200) }
         try check(await run(focusTimeout) == .focusUnavailable && focusTimeout.posts == 0, "focus timeout stays bounded")

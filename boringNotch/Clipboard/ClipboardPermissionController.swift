@@ -15,11 +15,12 @@ final class ClipboardPermissionController: NSObject, NSWindowDelegate {
     private var terminationObserver: NSObjectProtocol?
     private var authorizationCheck: Task<Void, Never>?
     private struct Waiter {
-        let continuation: CheckedContinuation<Bool?, Never>
+        let continuation: CheckedContinuation<ClipboardPasteAccess?, Never>
         let timeout: DispatchWorkItem
     }
     private var authorizationWaiters: [UUID: Waiter] = [:]
     private let requestedAXKey = "island.clipboardRequestedAccessibility"
+    private let requestedPostKey = "island.clipboardRequestedPostEvents"
 
     private override init() {
         super.init()
@@ -35,13 +36,14 @@ final class ClipboardPermissionController: NSObject, NSWindowDelegate {
         guard !terminating, alert == nil, let token = gate.begin() else { return false }
         defer { gate.finish(token) }
         let foreground = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        guard let authorized = await checkAccessibility(), gate.contains(token), !Task.isCancelled else {
+        guard let access = await checkPasteAccess(), gate.contains(token), !Task.isCancelled else {
             if gate.contains(token), !Task.isCancelled { showUnavailable(ifForeground: foreground) }
             return false
         }
         guard gate.contains(token), !Task.isCancelled else { return false }
-        if authorized { return ClipboardPermissionPolicy.mayPaste(wasAuthorized: true, requestedPermission: false) }
-        requestAccessibility(ifForeground: foreground)
+        NSLog("[clipboard] access helper=%d ax=%d post=%d", access.processIdentifier, access.accessibility, access.postEvents)
+        if access.canPaste { return ClipboardPermissionPolicy.mayPaste(wasAuthorized: true, requestedPermission: false) }
+        requestPastePermission(access, ifForeground: foreground)
         return false
     }
 
@@ -77,11 +79,11 @@ final class ClipboardPermissionController: NSObject, NSWindowDelegate {
             return
         case .showUnavailable, .skip: return
         }
-        guard let authorized = await checkAccessibility(), gate.contains(token), !Task.isCancelled else {
+        guard let access = await checkPasteAccess(), gate.contains(token), !Task.isCancelled else {
             if gate.contains(token), !Task.isCancelled { showUnavailable(ifForeground: foreground) }
             return
         }
-        if !authorized { requestAccessibility(ifForeground: foreground) }
+        if !access.canPaste { requestPastePermission(access, ifForeground: foreground) }
     }
 
     func cancelRequests() {
@@ -96,20 +98,53 @@ final class ClipboardPermissionController: NSObject, NSWindowDelegate {
         }
     }
 
-    private func requestAccessibility(ifForeground foreground: pid_t?) {
+    private func requestPastePermission(_ access: ClipboardPasteAccess, ifForeground foreground: pid_t?) {
         guard mayPresent(ifForeground: foreground) else { return }
-        let requested = UserDefaults.standard.bool(forKey: requestedAXKey)
+        let permission: ClipboardPastePermission = access.accessibility ? .postEvents : .accessibility
+        let key = permission == .accessibility ? requestedAXKey : requestedPostKey
+        let requested = UserDefaults.standard.bool(forKey: key)
         switch ClipboardPermissionPolicy.decision(state: .undetermined, requestedBefore: requested, trigger: .user) {
         case .requestSystem:
-            UserDefaults.standard.set(true, forKey: requestedAXKey)
-            XPCHelperClient.shared.requestAccessibilityAuthorization()
+            UserDefaults.standard.set(true, forKey: key)
+            if permission == .postEvents {
+                // CGRequestPostEventAccess may silently return false after a prior denial.
+                // Keep this explicit operation visible even when no new system prompt is possible.
+                showAlert(title: "允许发送粘贴按键", message: "请在“\(AccessibilityPermission.displayName)”中允许当前的 Boring Notch。授权后，回到目标输入框并重新打开剪贴板。",
+                    primary: "打开设置", ifForeground: foreground) {
+                        XPCHelperClient.shared.requestClipboardPasteAuthorization(.postEvents)
+                        self.openSettings("Privacy_Accessibility")
+                    }
+            } else { XPCHelperClient.shared.requestClipboardPasteAuthorization(permission) }
         case .showSettings:
-            showAlert(title: "允许自动粘贴", message: "请在系统设置的“\(AccessibilityPermission.displayName)”中允许当前版本。授权后，请重新选择要粘贴的内容。",
+            let missing = permission == .accessibility ? "读取与恢复输入焦点" : "发送粘贴按键"
+            showAlert(title: "允许自动粘贴", message: "尚未允许\(missing)。请在“\(AccessibilityPermission.displayName)”中允许当前的 Boring Notch。\n\n开关已打开仍失败时，请移除旧项目，再添加当前应用。授权后，回到目标输入框并重新打开剪贴板。",
                 primary: "打开设置", ifForeground: foreground) {
                     self.openSettings("Privacy_Accessibility")
                 }
         default: break
         }
+    }
+
+    /// Failure feedback remains visible after the drawer closes; no modal loop or automatic retry.
+    func explainPasteFailure(_ result: ClipboardPasteResult, copied: Bool = true) {
+        let foreground = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let message: String
+        switch result {
+        case .posted, .cancelled, .screenLocked: return
+        case .unauthorized, .postEventUnauthorized:
+            showAlert(title: "允许自动粘贴", message: "请在“\(AccessibilityPermission.displayName)”中允许当前的 Boring Notch。授权后，回到目标输入框并重新打开剪贴板。",
+                primary: "打开设置", ifForeground: foreground) { self.openSettings("Privacy_Accessibility") }
+            return
+        case .snapshotUnavailable:
+            message = "未能保存原输入位置。请回到目标输入框，重新打开剪贴板后再试。"
+        case .targetUnavailable: message = "原应用已不可用。"
+        case .focusChanged: message = "原输入框或窗口已变化。请返回需要粘贴的输入框后重新打开剪贴板。"
+        case .focusUnavailable: message = "键盘焦点未能返回原输入框。请重新打开剪贴板后再试。"
+        case .inputHeld: message = "请松开按键和鼠标按钮后重试。"
+        case .clipboardChanged: message = "剪贴板已被其他复制操作更改。"
+        case .eventFailure: message = "系统未能发送粘贴按键。请检查控制权限后重试。"
+        }
+        showAlert(title: "自动粘贴未完成", message: message + (copied ? "\n内容已复制，可按 ⌘V 手动粘贴。" : ""), primary: "好", ifForeground: foreground)
     }
     private func showReadSettings(ifForeground foreground: pid_t?) {
         showAlert(title: "允许读取剪贴板", message: "请在系统设置中将 Boring Notch 的剪贴板访问设为“始终允许”。",
@@ -172,24 +207,28 @@ final class ClipboardPermissionController: NSObject, NSWindowDelegate {
 
     /// One XPC probe is shared; each caller has a bounded deadline. A hung helper cannot leave
     /// paste busy forever or create an unbounded stream of abandoned helper requests.
-    private func checkAccessibility() async -> Bool? {
-        await withCheckedContinuation { continuation in
-            let id = UUID()
-            let timeout = DispatchWorkItem { [weak self] in self?.resolveAuthorizationWaiter(id, result: nil) }
-            authorizationWaiters[id] = Waiter(continuation: continuation, timeout: timeout)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: timeout)
-            if authorizationCheck == nil {
-                authorizationCheck = Task { @MainActor in
-                    let value = await XPCHelperClient.shared.isAccessibilityAuthorized()
-                    let result = XPCHelperClient.shared.helperAvailable ? value : nil
-                    self.authorizationCheck = nil
-                    let ids = Array(self.authorizationWaiters.keys)
-                    for id in ids { self.resolveAuthorizationWaiter(id, result: result) }
+    private func checkPasteAccess() async -> ClipboardPasteAccess? {
+        let id = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard !Task.isCancelled else { continuation.resume(returning: nil); return }
+                let timeout = DispatchWorkItem { [weak self] in self?.resolveAuthorizationWaiter(id, result: nil) }
+                authorizationWaiters[id] = Waiter(continuation: continuation, timeout: timeout)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: timeout)
+                if authorizationCheck == nil {
+                    authorizationCheck = Task { @MainActor in
+                        let result = await XPCHelperClient.shared.clipboardPasteAccess()
+                        self.authorizationCheck = nil
+                        let ids = Array(self.authorizationWaiters.keys)
+                        for id in ids { self.resolveAuthorizationWaiter(id, result: result) }
+                    }
                 }
             }
+        } onCancel: {
+            Task { @MainActor in self.resolveAuthorizationWaiter(id, result: nil) }
         }
     }
-    private func resolveAuthorizationWaiter(_ id: UUID, result: Bool?) {
+    private func resolveAuthorizationWaiter(_ id: UUID, result: ClipboardPasteAccess?) {
         guard let waiter = authorizationWaiters.removeValue(forKey: id) else { return }
         waiter.timeout.cancel()
         waiter.continuation.resume(returning: result)

@@ -32,7 +32,7 @@ struct TabSelectionView: View {
                     TabButton(label: tab.label, icon: tab.icon, selected: coordinator.currentView == tab.view) {
                         HermesStore.shared.capturesNotchDrops = tab.view == .hermes
                         withAnimation(.smooth) {
-                            coordinator.currentView = tab.view
+                            coordinator.selectTab(tab.view)
                         }
                     }
                     .frame(height: 26)

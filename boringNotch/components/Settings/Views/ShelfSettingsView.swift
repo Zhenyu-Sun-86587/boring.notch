@@ -9,6 +9,7 @@ import Defaults
 import SwiftUI
 
 struct ShelfSettingsView: View {
+    @ObservedObject private var coordinator = BoringViewCoordinator.shared
     @Default(.shelfTapToOpen) var shelfTapToOpen: Bool
     @Default(.quickShareProvider) var quickShareProvider
     @Default(.expandedDragDetection) var expandedDragDetection: Bool
@@ -27,6 +28,8 @@ struct ShelfSettingsView: View {
                 Defaults.Toggle(key: .openShelfByDefault) {
                     Text("Open shelf by default if items are present")
                 }
+                .disabled(coordinator.openLastTabByDefault)
+                .help(coordinator.openLastTabByDefault ? "已启用记住上次标签" : "暂存区有文件时优先打开")
                 Defaults.Toggle(key: .expandedDragDetection) {
                     Text("Expanded drag detection area")
                 }

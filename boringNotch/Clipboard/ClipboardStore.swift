@@ -67,6 +67,7 @@ final class ClipboardStore: ObservableObject {
     private var sessionGeneration = UUID()
     var sessionID: UUID { sessionGeneration }
     private var copyTask: Task<Void, Never>?
+    private var copyActionID: UUID?
     private var heldScopes: [URL] = []
     private var scopeReleaseTask: Task<Void, Never>?
     private var thumbnailCache = NSCache<NSString, NSImage>()
@@ -127,6 +128,7 @@ final class ClipboardStore: ObservableObject {
         if enabled { restartMonitor() }
     }
     func beginSession(target: NSRunningApplication?) {
+        cancelCopyTask()
         pasting = false
         sessionGeneration = UUID()
         sessionTarget = nil
@@ -141,7 +143,7 @@ final class ClipboardStore: ObservableObject {
     func endSession() {
         pasting = false
         sessionGeneration = UUID()
-        copyTask?.cancel(); copyTask = nil
+        cancelCopyTask()
         keyboardSessionActive = false
         search = ""
         sessionTarget = nil
@@ -345,9 +347,28 @@ final class ClipboardStore: ObservableObject {
         busy = true
         let target = sessionTarget
         let generation = sessionGeneration
+        let actionID = UUID()
+        copyActionID = actionID
         copyTask = Task {
-            defer { busy = false; copyTask = nil }
+            defer {
+                if copyActionID == actionID { busy = false; copyTask = nil; copyActionID = nil }
+            }
             do {
+                var targetToken: String?
+                if paste {
+                    guard let target, !target.isTerminated else {
+                        ClipboardPermissionController.shared.explainPasteFailure(.targetUnavailable, copied: false)
+                        return
+                    }
+                    guard await ClipboardPermissionController.shared.ensurePasteAccess() else { return }
+                    guard !Task.isCancelled, !locked, sessionGeneration == generation else { return }
+                    targetToken = await ClipboardPresentation.shared.targetToken(for: target.processIdentifier)
+                    guard !Task.isCancelled, !locked, sessionGeneration == generation else { return }
+                    guard targetToken != nil else {
+                        ClipboardPermissionController.shared.explainPasteFailure(.snapshotUnavailable, copied: false)
+                        return
+                    }
+                }
                 let payload = try await history.payload(id: record.id)
                 guard !Task.isCancelled, !locked, sessionGeneration == generation else { return }
                 let objects = try payload.items.map { item -> NSPasteboardItem in
@@ -389,12 +410,17 @@ final class ClipboardStore: ObservableObject {
                     pasting = true
                     NotificationCenter.default.post(name: .clipboardPasteRequested, object: nil,
                                                     userInfo: ["targetPID": Int(target.processIdentifier), "sessionID": generation.uuidString,
-                                                               "changeCount": changeCount])
+                                                               "changeCount": changeCount, "targetToken": targetToken ?? ""])
                 } else {
                     NotificationCenter.default.post(name: .clipboardDismissRequested, object: nil, userInfo: ["sessionID": generation.uuidString])
                 }
             } catch { scheduleScopeRelease(); message = error.localizedDescription }
         }
+    }
+    private func cancelCopyTask() {
+        copyActionID = nil
+        copyTask?.cancel(); copyTask = nil
+        busy = false
     }
     private func scheduleScopeRelease() {
         scopeReleaseTask?.cancel()
