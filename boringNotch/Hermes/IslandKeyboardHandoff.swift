@@ -36,7 +36,6 @@ extension BoringNotchSkyLightWindow {
     /// actually removes it from WindowServer's key-window selection while focus is transferred.
     @discardableResult
     func beginIslandKeyboardHandoff() -> UUID {
-        IslandGeometryTrace.record("handoff.begin", window: self)
         let token = islandKeyboardHandoffState.begin(wasVisible: isVisible)
         islandKeyboardOwner = nil
         allowsIslandKeyboard = false
@@ -45,13 +44,10 @@ extension BoringNotchSkyLightWindow {
         islandKeyboardHandoffState.performsInternalOrderOut = true
         orderOut(nil)
         islandKeyboardHandoffState.performsInternalOrderOut = false
-        IslandGeometryTrace.record("handoff.orderedOut", window: self)
         return token
     }
 
     func endIslandKeyboardHandoff(_ token: UUID, restoreVisible: Bool) {
-        IslandGeometryTrace.record("handoff.end.request", window: self, flags: ["restoreVisible": restoreVisible])
-        defer { IslandGeometryTrace.record("handoff.end.result", window: self) }
         guard islandKeyboardHandoffState.matches(token) else { return }
         // Pending SwiftUI focus requests must not survive the suspended interval.
         islandKeyboardOwner = nil
@@ -74,7 +70,6 @@ extension BoringNotchSkyLightWindow {
 
     /// External orderOut/close/lock invalidates queued restorations before they can reopen a panel.
     func invalidateIslandKeyboardHandoff(closing: Bool = false) {
-        IslandGeometryTrace.record("handoff.invalidate", window: self, flags: ["closing": closing])
         islandKeyboardHandoffState.invalidate(closing: closing)
         islandKeyboardOwner = nil
         allowsIslandKeyboard = false

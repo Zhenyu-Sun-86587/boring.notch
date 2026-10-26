@@ -62,10 +62,6 @@ struct WorkspaceSurfaceFrame<WindowBridge: View>: AnimatableModifier {
                             .fill(.black)
                             .shadow(color: .black.opacity(Double(max(0, min(1, shadowOpacity)))), radius: 6)
                     }
-                    // Resolve the shell's changing geometry once before forwarding it to
-                    // the background, clip and replaced page. A compositingGroup groups
-                    // rendering effects without establishing this geometry boundary.
-                    .geometryGroup()
             } else {
                 content
             }

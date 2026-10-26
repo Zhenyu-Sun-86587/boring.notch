@@ -63,11 +63,6 @@ jobs:
           set -euo pipefail
           mkdir -p build
           python3 .github/scripts/test_window_layout.py 2>&1 | tee build/window-layout-report.txt
-      - name: Verify opt-in geometry diagnostics stay bounded and private
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 .github/scripts/test_island_geometry_trace.py 2>&1 | tee build/island-geometry-trace-report.txt
       - name: Verify actual AppKit display cycles in offscreen windows
         shell: bash
         run: |
@@ -131,7 +126,6 @@ jobs:
             build/window-display-cycle-report.txt
             build/workspace-animation-report.txt
             build/island-components-report.txt
-            build/island-geometry-trace-report.txt
             build/island-components-checks/
             build/ordered-window-checks/
             build/clipboard-paste-report.txt
@@ -155,7 +149,6 @@ jobs:
             build/window-display-cycle-report.txt
             build/workspace-animation-report.txt
             build/island-components-report.txt
-            build/island-geometry-trace-report.txt
             build/island-components-checks/
             build/ordered-window-checks/
             build/clipboard-paste-report.txt

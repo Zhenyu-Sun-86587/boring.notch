@@ -549,73 +549,15 @@ private struct TabReplacementRoot: View {
     print("PASS production container: \(cycles) actual animated music/shelf/chat/clipboard replacements with nested horizontal/vertical scrolling")
 }
 
-@MainActor private func geometryTraceChecks() async throws {
-    let output = IslandGeometryTrace.outputURL
-    try check(!FileManager.default.fileExists(atPath: output.path), "Unexpected preexisting trace output")
-    if !IslandGeometryTrace.enabled {
-        IslandGeometryTrace.record("disabled", window: nil)
-        try check(!FileManager.default.fileExists(atPath: output.path), "Default-off trace created a file")
-        print("TRACE_CHECK defaultOff=true fileCreated=false")
-        return
-    }
-    let window = try panel()
-    defer { finish(window) }
-    let sentinel = "sensitive://example.invalid/DO-NOT-LOG"
-    window.title = sentinel
-    let content = NSView(frame: NSRect(x: 0, y: 0, width: 640, height: 210))
-    let anchor = IslandWindowBridge.Anchor(frame: NSRect(x: 0, y: 20, width: 640, height: 190))
-    window.contentView = content
-    content.addSubview(anchor)
-    let context = IslandGeometryTraceContext(targetSize: CGSize(width: 640, height: 190),
-        selection: sentinel, open: true, gestureProgress: 0)
-    anchor.receive(size: CGSize(width: 640, height: 210), wantsKeyboard: false,
-        permitsKeyboardWithoutHover: false, keyboardActivation: sentinel, traceContext: context)
-    try await Task.sleep(for: .milliseconds(1_000))
-    let data = try Data(contentsOf: output)
-    let lines = String(decoding: data, as: UTF8.self).split(separator: "\n")
-    let events = try lines.map { try JSONSerialization.jsonObject(with: Data($0.utf8)) as! [String: Any] }
-    try check(data.count * 10 <= 2 * 1_024 * 1_024, "Ten ordinary sampling intervals would exhaust the file cap")
-    let samples = events.filter { $0["event"] as? String == "sample" }
-    let starts = events.filter { $0["event"] as? String == "sampling.begin" }
-    let ends = events.filter { $0["event"] as? String == "sampling.end" }
-    try check(samples.count >= 10 && samples.count <= 52 && starts.count == 1 && ends.count == 1,
-        "Trace did not use one bounded sampling interval: samples=\(samples.count), starts=\(starts.count), ends=\(ends.count)")
-    let began = starts[0]["elapsedMs"] as! Double
-    let lastSample = samples.last!["elapsedMs"] as! Double
-    try check(lastSample - began <= 820, "Trace sampled beyond its 0.8-second deadline")
-    anchor.receive(size: CGSize(width: 640, height: 210), wantsKeyboard: false,
-        permitsKeyboardWithoutHover: false, keyboardActivation: sentinel, traceContext: context)
-    try await Task.sleep(for: .milliseconds(160))
-    let stoppedData = try Data(contentsOf: output)
-    try check(stoppedData.count == data.count, "Unchanged requests kept logging after sampling stopped")
-    let sampleWindow = samples[0]["window"] as? [String: Any]
-    try check(sampleWindow?["windowServer"] != nil, "Own-window WindowServer read status missing")
-    for _ in 0..<10_000 where IslandGeometryTrace.canRecord {
-        IslandGeometryTrace.record("budget", window: window, anchor: anchor, context: context)
-    }
-    let full = try Data(contentsOf: output)
-    let fullText = String(decoding: full, as: UTF8.self)
-    try check(full.count <= 2 * 1_024 * 1_024 && full.count >= 2 * 1_024 * 1_024 - 16_384,
-        "Trace did not enforce its 2-MiB cap: \(full.count)")
-    try check(!fullText.contains(sentinel), "Trace leaked a title, activation value or unknown selection")
-    try check(!window.isActuallyVisible && window.focusRequests == 0 && window.orderingRequests == 0,
-        "Trace affected hidden fixture visibility/focus")
-    print("TRACE_CHECK intervalBytes=\(data.count) samples=\(samples.count) lastSampleMs=\(lastSample - began) stopped=true bytes=\(full.count) sentinelAbsent=true ownWindowServerStatus=\(String(describing: sampleWindow?["windowServer"]))")
-}
-
 @MainActor private final class CheckDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         Task { @MainActor in
             do {
-                if ProcessInfo.processInfo.arguments.contains("--geometry-trace-checks") {
-                    try await geometryTraceChecks()
-                } else {
-                    try await requestChecks()
-                    try await focusChecks()
-                    try await handoffChecks()
-                    try await hostingChecks(cycles: 450)
-                    try await tabReplacementChecks(cycles: 320)
-                }
+                try await requestChecks()
+                try await focusChecks()
+                try await handoffChecks()
+                try await hostingChecks(cycles: 450)
+                try await tabReplacementChecks(cycles: 320)
                 print("PASS native window layout checks; all windows stayed hidden")
                 fflush(stdout)
                 NSApp.terminate(nil)

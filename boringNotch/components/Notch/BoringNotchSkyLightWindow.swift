@@ -70,6 +70,11 @@ class BoringNotchSkyLightWindow: NSPanel {
         isMovable = false
         level = .mainMenu + 3
         hasShadow = false
+        // This panel renders its own opening/closing shell inside a fixed viewport.
+        // Releasing nonactivating keyboard focus orders it out and back in; AppKit's
+        // automatic window animation would also transform that viewport, separating
+        // the visible notch from the screen's top edge.
+        animationBehavior = .none
         isReleasedWhenClosed = false
 
         // Force dark appearance regardless of system setting

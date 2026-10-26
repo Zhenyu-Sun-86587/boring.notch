@@ -308,11 +308,7 @@ struct ContentView: View {
                             wantsKeyboard: workspaceIsOpen,
                             permitsKeyboardWithoutHover: clipboard.keyboardSessionActive && clipboardPresentation.keyboardScreenUUID == vm.screenUUID,
                             keyboardActivation: coordinator.currentView == .clipboard ? clipboard.sessionID.uuidString : "hermes",
-                            keyboardReady: clipboardPresentation.keyboardTargetReady,
-                            traceContext: IslandGeometryTraceContext(targetSize: workspaceSurfaceTarget,
-                                selection: coordinator.currentView.rawValue, open: vm.notchState == .open,
-                                gestureProgress: gestureProgress, measuredClosedSize: measuredClosedSurfaceSize,
-                                measuredCompactSize: measuredCompactSurfaceSize))
+                            keyboardReady: clipboardPresentation.keyboardTargetReady)
                     })
                           .overlay(alignment: .top) {
                               displayClosedNotchHeight.isZero && vm.notchState == .closed ? nil
