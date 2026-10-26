@@ -52,7 +52,7 @@ struct HermesDrawer: View {
             if !SurfaceFiles.references(in: store.input).isEmpty {
                 Text("上下文：" + SurfaceFiles.references(in: store.input).joined(separator: ", "))
                     .font(.caption).foregroundStyle(.secondary)
-                    .help("发送时读取最新文件。目录变化：\(surface.revision.uuidString)")
+                    .help("发送时读取 \(surface.directoryPath) 中的最新文件。")
             }
             if let message = store.message { Text(message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
             HStack(alignment: .bottom) {
