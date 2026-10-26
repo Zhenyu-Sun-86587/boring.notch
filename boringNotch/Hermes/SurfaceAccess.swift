@@ -42,6 +42,7 @@ final class SurfaceAccess: ObservableObject {
     private var presenter: NoteFilePresenter?
     private var scopedURL: URL?
     private var users = 0
+    private var watchGeneration = UUID()
     init() { filePath = UserDefaults.standard.string(forKey: "island.surfaceFilePath") ?? "" }
 
     func chooseFile() {
@@ -135,9 +136,10 @@ final class SurfaceAccess: ObservableObject {
     private func startWatching() {
         guard scopedURL == nil, let file = try? resolve(), file.startAccessingSecurityScopedResource() else { return }
         scopedURL = file
+        let generation = watchGeneration
         let filePresenter = NoteFilePresenter(url: file) { [weak self] movedURL in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, self.watchGeneration == generation else { return }
                 if let movedURL {
                     do { try self.saveSelection(movedURL); self.restartWatching() }
                     catch { self.errorMessage = error.localizedDescription }
@@ -157,13 +159,14 @@ final class SurfaceAccess: ObservableObject {
     private func addWatcher(_ url: URL, isParent: Bool) {
         let descriptor = open(url.path, O_EVTONLY)
         guard descriptor >= 0 else { return }
+        let generation = watchGeneration
         let source = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: descriptor,
             eventMask: [.write, .rename, .delete, .attrib, .revoke], queue: .main)
         source.setEventHandler { [weak self, weak source] in
             let events = source?.data ?? []
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, self.watchGeneration == generation else { return }
                 self.revision = UUID()
                 if !isParent,
                    !events.intersection([.rename, .delete, .revoke]).isEmpty {
@@ -177,6 +180,7 @@ final class SurfaceAccess: ObservableObject {
         source.resume()
     }
     private func stopWatching() {
+        watchGeneration = UUID()
         for watcher in watchers { watcher.cancel() }
         watchers = []
         if let presenter { NSFileCoordinator.removeFilePresenter(presenter) }

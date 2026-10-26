@@ -193,4 +193,3 @@ struct OnboardingView: View {
         return .accessibilityPermission
     }
 }
-
