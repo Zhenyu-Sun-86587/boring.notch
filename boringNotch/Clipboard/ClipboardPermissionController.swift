@@ -12,6 +12,7 @@ final class ClipboardPermissionController: NSObject, NSWindowDelegate {
     private var alert: NSAlert?
     private var alertEpoch: UUID?
     private var alertAction: (() -> Void)?
+    private var alertReturnApplication: NSRunningApplication?
     private var terminationObserver: NSObjectProtocol?
     private var authorizationCheck: Task<Void, Never>?
     private struct Waiter {
@@ -119,6 +120,7 @@ final class ClipboardPermissionController: NSObject, NSWindowDelegate {
             let missing = permission == .accessibility ? "读取与恢复输入焦点" : "发送粘贴按键"
             showAlert(title: "允许自动粘贴", message: "尚未允许\(missing)。请在“\(AccessibilityPermission.displayName)”中允许当前的 Boring Notch。\n\n开关已打开仍失败时，请移除旧项目，再添加当前应用。授权后，回到目标输入框并重新打开剪贴板。",
                 primary: "打开设置", ifForeground: foreground) {
+                    XPCHelperClient.shared.requestClipboardPasteAuthorization(permission)
                     self.openSettings("Privacy_Accessibility")
                 }
         default: break
@@ -164,12 +166,8 @@ final class ClipboardPermissionController: NSObject, NSWindowDelegate {
 
     private func showAlert(title: String, message: String, primary: String, ifForeground foreground: pid_t?, action: (() -> Void)? = nil) {
         guard alert == nil, mayPresent(ifForeground: foreground) else { return }
-        let prompt = NSAlert()
-        prompt.messageText = title
-        prompt.informativeText = message
-        prompt.alertStyle = .informational
-        prompt.addButton(withTitle: primary)
-        if action != nil { prompt.addButton(withTitle: "取消") }
+        let prompt = ClipboardPermissionAlert.make(title: title, message: message,
+            primary: primary, hasCancel: action != nil)
         let window = prompt.window
         window.isReleasedWhenClosed = false
         window.hidesOnDeactivate = false
@@ -184,25 +182,41 @@ final class ClipboardPermissionController: NSObject, NSWindowDelegate {
         alert = prompt
         alertEpoch = epoch
         alertAction = action
+        if let foreground, foreground != ProcessInfo.processInfo.processIdentifier {
+            alertReturnApplication = NSRunningApplication(processIdentifier: foreground)
+        }
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate()
     }
     @objc private func alertButtonPressed(_ sender: NSButton) {
         let action = sender.tag == 0 && alertEpoch == epoch ? alertAction : nil
-        closeAlert()
+        closeAlert(restoreApplication: action == nil)
         action?()
     }
-    private func closeAlert() {
+    private func closeAlert(restoreApplication: Bool = false) {
         let old = alert
+        let returnApplication = alertReturnApplication
         alert = nil; alertEpoch = nil; alertAction = nil
+        alertReturnApplication = nil
         old?.window.delegate = nil
         old?.window.orderOut(nil)
         old?.window.close()
+        // Activating an accessory app for a permission/error dialog must not leave it as
+        // the foreground destination of the next clipboard session. Never steal activation
+        // back if the user already moved to a different app, or when opening Settings.
+        if restoreApplication, !terminating,
+           NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier,
+           let returnApplication, !returnApplication.isTerminated,
+           NSApp.keyWindow == nil || NSApp.keyWindow is BoringNotchSkyLightWindow {
+            BoringViewCoordinator.shared.releaseKeyboard()
+            NSApp.yieldActivation(to: returnApplication)
+            _ = returnApplication.activate(from: .current, options: [])
+        }
     }
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow, alert?.window === window else { return }
-        alert = nil; alertEpoch = nil; alertAction = nil
+        alert = nil; alertEpoch = nil; alertAction = nil; alertReturnApplication = nil
     }
 
     /// One XPC probe is shared; each caller has a bounded deadline. A hung helper cannot leave

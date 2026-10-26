@@ -142,7 +142,7 @@ struct HermesDrawer: View {
             vm.dropInteraction.dropZoneTargeting = false
             store.disappeared(vm.screenUUID ?? "primary")
         }
-        .onReceive(NotificationCenter.default.publisher(for: .islandLocked)) { _ in inputFocused = false; store.stop() }
+        .onReceive(NotificationCenter.default.publisher(for: .islandLocked)) { _ in inputFocused = false }
     }
 
     private var shouldFocusInput: Bool {

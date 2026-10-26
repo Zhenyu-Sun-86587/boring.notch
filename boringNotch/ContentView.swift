@@ -141,6 +141,20 @@ struct ContentView: View {
         vm.notchState == .open && (coordinator.currentView == .hermes || coordinator.currentView == .clipboard)
     }
 
+    private enum OpenedPage: Hashable {
+        case tab(NotchViews)
+        case compact
+        case notification(String)
+    }
+
+    private var openedPage: OpenedPage {
+        if let notification = notificationManager.activeNotification, !workspaceIsOpen {
+            return .notification(notification.id)
+        }
+        if Defaults[.compactMode] && !workspaceIsOpen { return .compact }
+        return .tab(coordinator.currentView)
+    }
+
     /// Compact mode drops the tab bar along with the tabs it switches
     /// between — there's only the player to show, so a switcher would have
     /// nothing to switch to. Also what keeps the panel narrow, since the
@@ -643,17 +657,19 @@ struct ContentView: View {
                       }
                       .zIndex(1)
             if vm.notchState == .open {
-                VStack {
+                IslandPageContainer(selection: openedPage) { page in
                     // An open notch with a live notification is showing the
                     // reply UI — the usual tabs can wait until it's dismissed.
-                    if let notification = notificationManager.activeNotification, !workspaceIsOpen {
-                        NotificationExpandedView(notification: notification)
-                            .id(notification.id)
-                    } else if coordinator.currentView == .clipboard {
+                    switch page {
+                    case .notification:
+                        if let notification = notificationManager.activeNotification {
+                            NotificationExpandedView(notification: notification)
+                        }
+                    case .tab(.clipboard):
                         ClipboardDrawer()
-                    } else if coordinator.currentView == .hermes {
+                    case .tab(.hermes):
                         HermesDrawer()
-                    } else if Defaults[.compactMode] {
+                    case .compact:
                         // Player only — no tab switching, so currentView is
                         // ignored here rather than offering a shelf the
                         // compact layout has no room (or tab bar) for.
@@ -671,24 +687,17 @@ struct ContentView: View {
                         .onDisappear {
                             isHoveringMusicArea = false
                         }
-                    } else {
-                        switch coordinator.currentView {
-                        case .home:
-                            NotchHomeView(
-                                albumArtNamespace: albumArtNamespace,
-                                horizontalMediaGestureFeedback: horizontalMediaGestureFeedback,
-                                isHoveringMusicArea: $isHoveringMusicArea
-                            )
-                        case .clipboard:
-                            ClipboardDrawer()
-                        case .hermes:
-                            HermesDrawer()
-                        case .shelf:
-                            ShelfView(
-                                dropInteraction: vm.dropInteraction,
-                                animation: vm.animation
-                            )
-                        }
+                    case .tab(.home):
+                        NotchHomeView(
+                            albumArtNamespace: albumArtNamespace,
+                            horizontalMediaGestureFeedback: horizontalMediaGestureFeedback,
+                            isHoveringMusicArea: $isHoveringMusicArea
+                        )
+                    case .tab(.shelf):
+                        ShelfView(
+                            dropInteraction: vm.dropInteraction,
+                            animation: vm.animation
+                        )
                     }
                 }
                 .transition(openedBodyTransition)

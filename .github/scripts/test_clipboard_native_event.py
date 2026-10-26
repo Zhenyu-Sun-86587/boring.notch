@@ -3,10 +3,12 @@
 
 No window, activation, clipboard access, global CGEventPost, input tap or permission request.
 Missing pre-existing CG event-post access is recorded as SKIP, never granted by this test.
-Receiving Cmd+V proves transport only, not a user editor's paste acceptance.
+Receiving Cmd+V proves this isolated PID fixture transport only. Production uses session
+events, which this script never sends; their routing policy has a separate recording-sink test.
 """
 from pathlib import Path
 import plistlib
+import shutil
 import subprocess
 import tempfile
 import uuid
@@ -33,7 +35,11 @@ def plist(path, values):
 
 with tempfile.TemporaryDirectory(prefix="boring-native-clipboard-") as temporary:
     work = Path(temporary)
-    compiler = ["xcrun", "swiftc", "-parse-as-library", "-swift-version", "5", "-target", "arm64-apple-macos27.0"]
+    compiler = ["xcrun", "swiftc", "-parse-as-library", "-swift-version", "5", "-target", "arm64-apple-macos27.0",
+                "-D", "CLIPBOARD_EVENT_FIXTURE"]
+    policy = work / "ClipboardPasteEventChecks"
+    run(compiler + [root / "Shared/ClipboardPasteEvent.swift", root / ".github/scripts/ClipboardPasteEventChecks.swift", "-o", policy])
+    run([policy], log="session-policy.log")
     direct = work / "ClipboardNativeEventChecks"
     run(compiler + [root / "Shared/ClipboardPasteEvent.swift", root / ".github/scripts/ClipboardNativeEventChecks.swift", "-o", direct])
     run([direct], log="direct-route.log")
@@ -63,5 +69,12 @@ with tempfile.TemporaryDirectory(prefix="boring-native-clipboard-") as temporary
     run(["codesign", "--force", "--sign", "-", helper])
     run(["codesign", "--force", "--sign", "-", "--entitlements", entitlements, app])
     run(["codesign", "--verify", "--deep", "--strict", app])
-    run([macos / "ClipboardNativeFixture"], log="xpc-route.log")
+    try:
+        run([macos / "ClipboardNativeFixture"], log="xpc-route.log")
+    finally:
+        # This fresh UUID belongs solely to this test run. Never remove an app container
+        # by prefix or enumerate/delete other fixtures that another task may still use.
+        container = Path.home() / "Library/Containers" / identifier
+        if container.is_dir() and not container.is_symlink():
+            shutil.rmtree(container)
 print("Native clipboard reports:", report)

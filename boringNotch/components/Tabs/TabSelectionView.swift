@@ -31,27 +31,23 @@ struct TabSelectionView: View {
             ForEach(tabs.filter { $0.view != .shelf || shelfEnabled }) { tab in
                     TabButton(label: tab.label, icon: tab.icon, selected: coordinator.currentView == tab.view) {
                         HermesStore.shared.capturesNotchDrops = tab.view == .hermes
-                        withAnimation(.smooth) {
-                            coordinator.selectTab(tab.view)
-                        }
+                        coordinator.selectTab(tab.view)
                     }
                     .frame(height: 26)
+                    .accessibilityIdentifier("island-tab-\(tab.view.rawValue)")
                     .foregroundStyle(tab.view == coordinator.currentView ? .white : .gray)
                     .background {
                         if tab.view == coordinator.currentView {
                             Capsule()
-                                .fill(coordinator.currentView == tab.view ? Color(nsColor: .secondarySystemFill) : Color.clear)
+                                .fill(Color(nsColor: .secondarySystemFill))
                                 .matchedGeometryEffect(id: "capsule", in: animation)
-                        } else {
-                            Capsule()
-                                .fill(coordinator.currentView == tab.view ? Color(nsColor: .secondarySystemFill) : Color.clear)
-                                .matchedGeometryEffect(id: "capsule", in: animation)
-                                .hidden()
                         }
                     }
             }
         }
         .clipShape(Capsule())
+        // Animate only the highlight. Animating selectTab itself also retains outgoing pages.
+        .animation(.smooth, value: coordinator.currentView)
     }
 }
 

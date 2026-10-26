@@ -58,7 +58,9 @@ struct ShelfView: View {
                 }
             }
             .transaction { transaction in
-                transaction.animation = animation
+                if !transaction.disablesAnimations {
+                    transaction.animation = animation
+                }
             }
     }
 

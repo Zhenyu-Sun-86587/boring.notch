@@ -1,5 +1,6 @@
 // Fixture-only protocol. This method is never compiled into the shipping service.
 import Foundation
+import CoreGraphics
 
 private final class FixtureService: NSObject, ClipboardNativeFixtureProtocol {
     private let clientPID: Int32
@@ -14,23 +15,17 @@ private final class FixtureService: NSObject, ClipboardNativeFixtureProtocol {
             self.production.pasteClipboard(toProcessIdentifier: -1, hostProcessIdentifier: self.clientPID,
                 pasteboardChangeCount: -1, targetToken: nil, requestID: UUID().uuidString) { result in
                     guard data == nil && result == ClipboardPasteResult.targetUnavailable.rawValue else { reply(false); return }
-                    self.production.clipboardPasteAccess { accessData in
-                        guard let access = try? JSONDecoder().decode(ClipboardPasteAccess.self, from: accessData) else { reply(false); return }
-                        guard access.accessibility else { reply(true); return }
-                        // AX is queried only for this windowless fixture client, never a user app.
-                        self.production.captureClipboardTarget(self.clientPID) { captured in
-                            guard let captured, let target = try? JSONDecoder().decode(ClipboardPasteTarget.self, from: captured),
-                                  target.processIdentifier == self.clientPID, !target.hasWindow, !target.hasElement else { reply(false); return }
-                            self.production.releaseClipboardTarget(target.token)
-                            reply(true)
-                        }
-                    }
+                    // Invalid PID guards stop before any AX input-tree or clipboard access.
+                    reply(true)
                 }
         }
     }
     func postFixture(_ marker: Int64, with reply: @escaping (Bool) -> Void) {
         // Only the connection's own client can receive this fixture event. No global session post.
-        reply(ClipboardPasteEvent.post(to: clientPID, marker: marker))
+        guard clientPID > 0, CGPreflightPostEventAccess(),
+              let events = ClipboardPasteEvent.makeEvents(marker: marker) else { reply(false); return }
+        for event in events { event.postToPid(clientPID) }
+        reply(true)
     }
 }
 private final class FixtureDelegate: NSObject, NSXPCListenerDelegate {

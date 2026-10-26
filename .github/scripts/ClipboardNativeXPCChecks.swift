@@ -25,7 +25,7 @@ import AppKit
             if received == 2 {
                 if let monitor { NSEvent.removeMonitor(monitor) }
                 let unchanged = foreground == NSWorkspace.shared.frontmostApplication?.processIdentifier
-                print("PASS native sandbox-host/XPC-helper route: Cmd+V received=2 unchangedForeground=\(unchanged) windows=\(app.windows.count)")
+                print("PASS isolated sandbox-host/XPC-helper PID fixture: Cmd+V received=2 unchangedForeground=\(unchanged) windows=\(app.windows.count); not production session-route acceptance")
                 connection.invalidate()
                 exit(unchanged && app.windows.isEmpty ? 0 : 2)
             }
@@ -37,7 +37,7 @@ import AppKit
             remote.access { data in
                 guard let access = try? JSONDecoder().decode(ClipboardPasteAccess.self, from: data) else { print("FAIL helper access decoding"); exit(2) }
                 print("Native XPC helper access: AX=\(access.accessibility) postEvents=\(access.postEvents) helperPID=\(access.processIdentifier)")
-                guard access.postEvents else { print("SKIP native XPC delivery: no pre-existing event-post permission; never requested"); exit(0) }
+                guard access.postEvents else { print("SKIP isolated XPC/PID fixture: no pre-existing event-post permission; never requested"); exit(0) }
                 remote.postFixture(marker) { success in
                     guard success else { print("FAIL native XPC posting"); exit(2) }
                 }

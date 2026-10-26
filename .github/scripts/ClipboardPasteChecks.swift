@@ -27,6 +27,7 @@ private struct Failure: Error { let reason: String }
 
 @main private enum ClipboardPasteChecks {
     @MainActor static func main() async throws {
+        try destinationTrackerChecks()
         let coordinator = ClipboardPasteCoordinator()
         func run(_ fixture: Fixture, id: String = UUID().uuidString) async -> ClipboardPasteResult {
             await coordinator.perform(requestID: id, targetPID: 100, hostPID: 200, environment: fixture.environment)
@@ -119,5 +120,87 @@ private struct Failure: Error { let reason: String }
         failedTransport.postSucceeds = false
         try check(await run(failedTransport) == .eventFailure && failedTransport.posts == 1, "failed post is not retried through another route")
         print("PASS paste sequence: native focus, variable activation, AX-less controls, input release, cancellation, supersession, lock, newer clipboard and single delivery")
+    }
+
+    @MainActor private static func destinationTrackerChecks() throws {
+        let host: Int32 = 200, editorA: Int32 = 100, editorB: Int32 = 300
+
+        // The first snapshot can happen while our permission dialog owns foreground. It must
+        // not erase the previous editor or freeze the session permanently without a target.
+        var permissionRoundTrip = ClipboardDestinationTracker()
+        permissionRoundTrip.observeActivation(editorA, hostPID: host)
+        permissionRoundTrip.observeActivation(host, hostPID: host)
+        try check(permissionRoundTrip.rememberedPID == editorA, "permission alert activation preserves the last external editor")
+        try check(permissionRoundTrip.begin(frontmostPID: host, hostPID: host, allowRemembered: false) == nil,
+                  "a currently open own-editor/permission context does not choose an external destination")
+        try check(permissionRoundTrip.activePID == nil, "failed initial capture does not create an active destination")
+        try check(permissionRoundTrip.begin(frontmostPID: host, hostPID: host, allowRemembered: true) == editorA,
+                  "after the permission window closes, a later capture can recover the remembered editor")
+        try check(permissionRoundTrip.activePID == editorA, "recovered destination is latched for this session")
+
+        // No activation history is not a target. A later real external foreground can recover
+        // without closing/reopening the drawer solely to reset a failed-capture flag.
+        var initiallyMissing = ClipboardDestinationTracker()
+        try check(initiallyMissing.begin(frontmostPID: nil, hostPID: host, allowRemembered: true) == nil,
+                  "a missing foreground does not invent a destination")
+        try check(initiallyMissing.begin(frontmostPID: host, hostPID: host, allowRemembered: true) == nil,
+                  "our application without external history does not become its own paste target")
+        initiallyMissing.observeActivation(editorA, hostPID: host)
+        try check(initiallyMissing.begin(frontmostPID: editorA, hostPID: host, allowRemembered: false) == editorA,
+                  "later external foreground recovers a session whose first capture found no destination")
+
+        // Workspace activation notifications may continue while the drawer is open. They are
+        // useful for the next opening but must never silently redirect the current paste lease.
+        var opened = ClipboardDestinationTracker()
+        try check(opened.begin(frontmostPID: editorA, hostPID: host, allowRemembered: true) == editorA,
+                  "external foreground is the initial destination")
+        opened.observeActivation(editorB, hostPID: host)
+        try check(opened.rememberedPID == editorB && opened.activePID == editorA,
+                  "external activation updates future memory without replacing an active target")
+        try check(opened.begin(frontmostPID: editorB, hostPID: host, allowRemembered: true) == editorA,
+                  "repeated begin while open cannot redirect paste to a newly activated application")
+        opened.observeActivation(host, hostPID: host)
+        try check(opened.begin(frontmostPID: host, hostPID: host, allowRemembered: false) == editorA,
+                  "a latched lease remains unchanged until end; foreground safety is checked by the paste coordinator")
+        opened.end()
+        try check(opened.activePID == nil && opened.rememberedPID == editorB,
+                  "close releases only the active destination and retains latest external activation")
+        try check(opened.begin(frontmostPID: editorB, hostPID: host, allowRemembered: true) == editorB,
+                  "close and reopen uses the new foreground destination")
+
+        // Fallback is only valid when our own non-editor UI is foreground; nil foreground and
+        // settings text fields are deliberately excluded even with a remembered external app.
+        var ownEditor = ClipboardDestinationTracker()
+        ownEditor.observeActivation(editorA, hostPID: host)
+        try check(ownEditor.begin(frontmostPID: nil, hostPID: host, allowRemembered: true) == nil,
+                  "remembered destination is not used when there is no known foreground")
+        try check(ownEditor.begin(frontmostPID: host, hostPID: host, allowRemembered: false) == nil,
+                  "our settings input never falls back to a previously active external app")
+        try check(ownEditor.begin(frontmostPID: editorB, hostPID: host, allowRemembered: false) == editorB,
+                  "a verified external foreground takes priority over remembered fallback policy")
+
+        // Process termination must remove only the matching destination, so a terminated PID
+        // cannot be resurrected by a later own-window capture or corrupt an unrelated lease.
+        var terminated = ClipboardDestinationTracker()
+        terminated.observeActivation(editorA, hostPID: host)
+        try check(terminated.begin(frontmostPID: editorA, hostPID: host, allowRemembered: true) == editorA,
+                  "termination fixture captures the first editor")
+        terminated.observeActivation(editorB, hostPID: host)
+        terminated.forget(editorB)
+        try check(terminated.rememberedPID == nil && terminated.activePID == editorA,
+                  "terminating only the remembered app preserves an unrelated active destination")
+        terminated.observeActivation(editorB, hostPID: host)
+        terminated.forget(editorA)
+        try check(terminated.activePID == nil && terminated.rememberedPID == editorB,
+                  "terminating the active app releases that lease without discarding other history")
+        terminated.forget(editorB)
+        try check(terminated.begin(frontmostPID: host, hostPID: host, allowRemembered: true) == nil,
+                  "terminated remembered apps are not reused from an own-window opening")
+        terminated.observeActivation(editorA, hostPID: host)
+        terminated.forget(999)
+        terminated.observeActivation(nil, hostPID: host)
+        try check(terminated.rememberedPID == editorA,
+                  "unrelated termination and absent activation do not erase a valid remembered app")
+        print("PASS clipboard destination state: permission round-trip recovery, retry after missing target, stable open-session lease, new target after close, terminated process cleanup and own-editor fallback exclusion")
     }
 }

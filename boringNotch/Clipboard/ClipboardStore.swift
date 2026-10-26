@@ -63,7 +63,6 @@ final class ClipboardStore: ObservableObject {
     private var permissionEpoch = UUID()
     private var monitorTick = 0
     private var legacyReadAllowed = false
-    private var sessionTarget: NSRunningApplication?
     private var sessionGeneration = UUID()
     var sessionID: UUID { sessionGeneration }
     private var copyTask: Task<Void, Never>?
@@ -127,15 +126,11 @@ final class ClipboardStore: ObservableObject {
         applyLimits()
         if enabled { restartMonitor() }
     }
-    func beginSession(target: NSRunningApplication?) {
+    func beginSession() {
         cancelCopyTask()
         pasting = false
         sessionGeneration = UUID()
-        sessionTarget = nil
         start()
-        if let target, target.processIdentifier != ProcessInfo.processInfo.processIdentifier, !target.isTerminated {
-            sessionTarget = target
-        }
         search = ""
         rebuildResults(resetSelection: true)
         applyLimits()
@@ -146,7 +141,6 @@ final class ClipboardStore: ObservableObject {
         cancelCopyTask()
         keyboardSessionActive = false
         search = ""
-        sessionTarget = nil
         thumbnailTasks.values.forEach { $0.cancel() }; thumbnailTasks.removeAll()
         thumbnailCache.removeAllObjects()
     }
@@ -345,8 +339,8 @@ final class ClipboardStore: ObservableObject {
     func copy(_ record: ClipboardHistoryRecord, paste: Bool) {
         guard !busy, !pasting, !locked else { return }
         busy = true
-        let target = sessionTarget
         let generation = sessionGeneration
+        let target = paste ? ClipboardPresentation.shared.applicationForPaste(sessionID: generation) : nil
         let actionID = UUID()
         copyActionID = actionID
         copyTask = Task {
@@ -356,7 +350,11 @@ final class ClipboardStore: ObservableObject {
             do {
                 var targetToken: String?
                 if paste {
-                    guard let target, !target.isTerminated else {
+                    guard let target else {
+                        ClipboardPermissionController.shared.explainPasteFailure(.snapshotUnavailable, copied: false)
+                        return
+                    }
+                    guard !target.isTerminated else {
                         ClipboardPermissionController.shared.explainPasteFailure(.targetUnavailable, copied: false)
                         return
                     }

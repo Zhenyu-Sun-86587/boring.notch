@@ -59,7 +59,10 @@ func hermesSubmissionChecks() throws {
         _ = transcript.updateAnswer("回答", request: request)
         _ = transcript.finish(.completed, request: request)
     }
-    try expect(transcript.turns.count == 8 && transcript.turns.first?.prompt == "4")
+    try expect(transcript.turns.count == 5 && transcript.turns.first?.prompt == "7")
+    try expect(transcript.messages.count == 10)
+    try expect(transcript.messages.map(\.role) == Array(repeating: ["user", "assistant"], count: 5).flatMap { $0 })
+    try expect(transcript.messages[0].parts[0].text == "7" && transcript.messages[8].parts[0].text == "11")
     let large = UUID()
     _ = try transcript.accept(request: large, prompt: "边界", user: String(repeating: "x", count: 131_072))
     _ = transcript.updateAnswer(String(repeating: "y", count: 131_072), request: large)

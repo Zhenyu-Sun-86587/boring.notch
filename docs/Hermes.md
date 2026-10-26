@@ -18,7 +18,10 @@ Hermes 构建关闭上游 Sparkle，使用本分支 Actions 的 Ad-hoc DMG / ZIP
 保存配置后新请求使用新配置，应用不会代为配置 Hermes 服务。
 发送前先检查配置、便签和附件；检查失败保留草稿。请求开始后，问题立即进入会话，
 输入栏清空并可继续写下一条。等待首字时显示“正在思考”，失败或停止保留该轮内容并可重试。
-后续请求只包含已成功完成的对话；重试不会重复增加同一条用户消息。
+后续请求只包含最近 5 轮已成功完成的问答（最多 10 条上下文消息），同时受总文本大小限制；重试不会重复增加同一条用户消息。
+收起灵动岛或切换标签后，请求继续在后台执行；重新打开时显示当前进度或完整结果。
+只有主动停止、清空或锁屏才取消请求。最后一个抽屉关闭且请求结束后，闲置 15 分钟清空内存中的会话。
+图片编码只属于当前请求，不进入历史上下文；成功后删除临时图片，停止或失败时仅保留源文件用于重试，清空或闲置清理时删除。
 
 ## 本地 Markdown 与宽度
 
@@ -60,7 +63,7 @@ Hermes 构建关闭上游 Sparkle，使用本分支 Actions 的 Ad-hoc DMG / ZIP
 自动粘贴分别检查执行进程的控制/辅助功能授权与按键发送权限；启用记录时另请求读取剪贴板。
 缺少权限时弹出对应授权或系统设置入口，失败会明确说明是权限、原输入位置变化还是按键投递问题。
 面板取得键盘前保存原应用、窗口和输入控件引用，不读取输入内容；关闭面板后恢复该控件，
-再次复查目标与锁屏状态，由非沙盒 XPC helper 向目标进程发送一次粘贴按键。
+再次复查目标与锁屏状态，由非沙盒 XPC helper 在目标位于前台时通过系统会话发送一次粘贴按键。
 授权后需返回目标输入框并重新打开剪贴板，不会把授权前的旧操作自动补发。
 系统不回报目标应用是否接受了粘贴，因此仍需实际应用验收。
 Ad-hoc 更新可能要求重新授权；仅复制历史项目不依赖自动粘贴权限。
@@ -72,8 +75,10 @@ swift run --package-path Packages/IslandCore IslandCoreChecks
 python3 .github/scripts/test_island_stream.py
 python3 .github/scripts/test_hermes_submission.py
 python3 .github/scripts/test_clipboard_paste.py
+python3 .github/scripts/test_clipboard_alert.py
 python3 .github/scripts/test_clipboard_native_event.py
 python3 .github/scripts/test_workspace_animation.py
+python3 .github/scripts/test_island_components.py
 python3 .github/scripts/check_chinese_localization.py
 python3 -m unittest discover -s .github/scripts/tests -q
 ```
@@ -81,9 +86,9 @@ python3 -m unittest discover -s .github/scripts/tests -q
 核心夹具覆盖 SSE UTF-8 分片、取消、会话淘汰、任意文件名、BOM/CRLF、并发追加、同步原子替换、
 图片下采样，以及剪贴板原始图片/透明度、重启恢复、多条项目顺序、去重、并发写入、配额与过滤。
 中文审计覆盖应用拥有的源字符串与资源；保留品牌、URL、设备名称、用户内容、服务返回内容。
-提交夹具直接编译生产 HermesStore，以隔离的流与文件替身验证异步草稿生命周期。
-原生粘贴夹具使用无窗口的沙盒测试应用、生产 helper 与定向事件接收器，不访问真实剪贴板或前台输入；
-运行环境没有既有按键发送权限时记录 SKIP，不自动申请授权。收到测试按键不代表真实编辑器已接受粘贴。
+提交夹具直接编译生产 HermesStore，以隔离的流与文件替身验证异步草稿生命周期、后台持续生成、隐藏时锁屏取消、闲置清理、5 轮上下文和图片释放。
+生产会话路由由注入的记录器检查，不实际发送系统会话事件。原生粘贴夹具使用无窗口的沙盒测试应用、生产 helper 与隔离 PID 接收器；
+运行环境没有既有按键发送权限时记录 SKIP，不自动申请授权。收到隔离定向事件不代表生产会话路线或真实编辑器已接受粘贴，详见 [实现研究](clipboard-research.md)。
 动画夹具在所有屏幕之外采样真实布局与渲染像素，检查轮廓、阴影、输入栏位置和透明区域命中范围。
 
 Actions 使用 Xcode 27.1 / ARM64，校验嵌套签名、架构、可执行权限，并运行成品启动/XPC 只读检查，

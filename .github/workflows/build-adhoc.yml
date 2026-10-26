@@ -47,6 +47,8 @@ jobs:
           set -euo pipefail
           mkdir -p build
           python3 .github/scripts/test_clipboard_paste.py 2>&1 | tee build/clipboard-paste-report.txt
+      - name: Verify clipboard permission alert layout without displaying UI
+        run: python3 .github/scripts/test_clipboard_alert.py
       - name: Verify native clipboard XPC and targeted event transport
         run: python3 .github/scripts/test_clipboard_native_event.py
       - name: Verify native window resizing without displaying UI
@@ -62,6 +64,8 @@ jobs:
           python3 .github/scripts/test_ordered_window_layout.py 2>&1 | tee build/window-display-cycle-report.txt
       - name: Verify workspace expansion from the notch origin
         run: python3 .github/scripts/test_workspace_animation.py
+      - name: Verify real tab header and page replacement at different heights
+        run: python3 .github/scripts/test_island_components.py
       - name: Build ARM64 application without certificate secrets
         shell: bash
         run: |
@@ -115,8 +119,11 @@ jobs:
             build/window-layout-report.txt
             build/window-display-cycle-report.txt
             build/workspace-animation-report.txt
+            build/island-components-report.txt
+            build/island-components-checks/
             build/ordered-window-checks/
             build/clipboard-paste-report.txt
+            build/clipboard-alert-report.txt
             build/hermes-markdown-report.txt
             build/hermes-submission-report.txt
             build/clipboard-native-checks/
@@ -133,8 +140,11 @@ jobs:
             build/window-layout-report.txt
             build/window-display-cycle-report.txt
             build/workspace-animation-report.txt
+            build/island-components-report.txt
+            build/island-components-checks/
             build/ordered-window-checks/
             build/clipboard-paste-report.txt
+            build/clipboard-alert-report.txt
             build/hermes-markdown-report.txt
             build/hermes-submission-report.txt
             build/clipboard-native-checks/

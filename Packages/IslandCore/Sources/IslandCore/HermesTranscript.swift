@@ -3,6 +3,7 @@ import Foundation
 /// Submitted messages are visible immediately; only completed exchanges become model context.
 /// Request IDs fence off delayed callbacks, while a retry keeps the original visible turn ID.
 public struct HermesTranscript: Sendable {
+    public static let maximumTurns = 5
     public enum Status: Sendable, Equatable {
         case thinking, responding, completed, stopped
         case failed(String)
@@ -76,7 +77,7 @@ public struct HermesTranscript: Sendable {
     private mutating func trim() {
         // The accepted request and bounded response fit within one 256 KB turn. Evict whole
         // older exchanges, including failed attempts, without hiding the message being answered.
-        while turns.count > 1 && (turns.count > 8 || turns.reduce(0, {
+        while turns.count > 1 && (turns.count > Self.maximumTurns || turns.reduce(0, {
             $0 + $1.user.utf8.count + $1.assistant.utf8.count
         }) > 262_144) { turns.removeFirst() }
     }

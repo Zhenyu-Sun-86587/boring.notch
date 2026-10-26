@@ -10,6 +10,7 @@ with tempfile.TemporaryDirectory(prefix="boring-paste-checks-") as temporary:
     subprocess.run(["xcrun", "swiftc", "-swift-version", "6", "-parse-as-library",
                     str(root / "Shared/ClipboardPasteCoordinator.swift"),
                     str(root / "Shared/ClipboardFocusRestoration.swift"),
+                    str(root / "Shared/ClipboardDestinationTracker.swift"),
                     str(root / ".github/scripts/ClipboardPasteChecks.swift"),
                     "-o", str(executable)], check=True, cwd=root, timeout=120)
     subprocess.run([str(executable)], check=True, cwd=root, timeout=15)

@@ -34,6 +34,8 @@ final class HermesStore: ObservableObject {
     }
     private var retryableSubmission: Submission?
     private let client: any HermesStreaming
+    private let idleExpirationDelay: Duration
+    private var lockObserver: AnyCancellable?
     private var generation: Task<Void, Never>?
     private var expiration: Task<Void, Never>?
     private var flush: Task<Void, Never>?
@@ -42,7 +44,15 @@ final class HermesStore: ObservableObject {
     private var dropID = UUID()
     private var visible: Set<String> = []
     private var generationID = UUID()
-    init(client: any HermesStreaming = HermesClient()) { self.client = client }
+    init(client: any HermesStreaming = HermesClient(), idleExpirationDelay: Duration = .seconds(900)) {
+        self.client = client
+        self.idleExpirationDelay = idleExpirationDelay
+        // The store owns requests even when no drawer exists. Lock protection must have the
+        // same lifetime; a view-scoped subscription disappears as soon as the notch closes.
+        lockObserver = NotificationCenter.default.publisher(for: .islandLocked)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.stop() }
+    }
 
     func appeared(_ id: String) {
         guard visible.insert(id).inserted else { return }
@@ -53,11 +63,19 @@ final class HermesStore: ObservableObject {
         guard visible.remove(id) != nil else { return }
         SurfaceAccess.shared.release()
         guard visible.isEmpty else { return }
-        stop()
+        scheduleExpirationIfIdle()
+    }
+    private func scheduleExpirationIfIdle() {
         expiration?.cancel()
+        expiration = nil
+        // Closing or changing tabs only detaches the UI. A running request keeps its context
+        // until it finishes; the full idle interval starts after background completion.
+        guard visible.isEmpty, !isGenerating, !isPreparingRequest else { return }
+        let delay = idleExpirationDelay
         expiration = Task { [weak self] in
-            do { try await Task.sleep(for: .seconds(900)) } catch { return }
-            self?.clear()
+            do { try await Task.sleep(for: delay) } catch { return }
+            guard !Task.isCancelled, let self, visible.isEmpty, !isGenerating, !isPreparingRequest else { return }
+            clear()
         }
     }
     func stop() {
@@ -67,10 +85,12 @@ final class HermesStore: ObservableObject {
         flushPending(id: id)
         if transcript.finish(.stopped, request: id) { turns = transcript.turns }
         isGenerating = false; isPreparingRequest = false
+        scheduleExpirationIfIdle()
     }
     func clear() {
         dropID = UUID()
         stop(); transcript.clear(); turns = []; answer = ""; input = ""; includesNote = false; isWide = false; message = nil
+        expiration?.cancel(); expiration = nil
         releaseSubmission()
         for attachment in attachments { deleteTemporary(attachment) }
         attachments = []
@@ -125,6 +145,7 @@ final class HermesStore: ObservableObject {
     }
     private func start(prompt: String, staged: [StagedAttachment], note: NoteSelection?,
                        configuration: HermesConfiguration, draft: UInt? = nil, retrying turnID: UUID? = nil) {
+        expiration?.cancel(); expiration = nil
         isGenerating = true; isPreparingRequest = true; message = nil
         let id = UUID(); generationID = id
         generation = Task { [weak self] in
@@ -179,6 +200,7 @@ final class HermesStore: ObservableObject {
                 flush?.cancel(); flush = nil; flushPending(id: id)
                 isGenerating = false; isPreparingRequest = false; generation = nil
                 if started && Conversation.needsWideLayout(answer) { isWide = true }
+                scheduleExpirationIfIdle()
             }
         }
     }
@@ -209,7 +231,7 @@ final class HermesStore: ObservableObject {
     }
     private static func prepare(_ attachments: [StagedAttachment]) async throws -> [ChatPart] {
         let urls = attachments.map(\.url)
-        return try await Task.detached(priority: .userInitiated) {
+        let preparation = Task.detached(priority: .userInitiated) {
             var parts: [ChatPart] = []
             var bytes = 0
             for url in urls {
@@ -229,7 +251,12 @@ final class HermesStore: ObservableObject {
                 }
             }
             return parts
-        }.value
+        }
+        return try await withTaskCancellationHandler {
+            try await preparation.value
+        } onCancel: {
+            preparation.cancel()
+        }
     }
     func saveAnswer() {
         guard !isGenerating, !isSaving, !answer.isEmpty else { return }

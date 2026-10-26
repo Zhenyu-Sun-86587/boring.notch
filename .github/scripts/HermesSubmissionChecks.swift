@@ -1,7 +1,11 @@
 // Compile with the production HermesStore. Every dependency below is a fixture: no application
 // window, pasteboard, Keychain, user settings/file or network service is accessed.
 import AppKit
+import ImageIO
 import IslandCore
+import UniformTypeIdentifiers
+
+extension Notification.Name { static let islandLocked = Notification.Name("fixture.islandLocked") }
 
 private struct SubmissionCheckFailure: Error, CustomStringConvertible { let description: String }
 private func require(_ condition: Bool, _ message: String) throws {
@@ -51,6 +55,7 @@ private actor SubmissionClient: HermesStreaming {
     private var pending: [Int: AsyncThrowingStream<Event, any Error>.Continuation] = [:]
     private(set) var requests: [[ChatMessage]] = []
     var count: Int { requests.count }
+    var activeCount: Int { pending.count }
 
     func stream(configuration: HermesConfiguration, messages: [ChatMessage],
                 onDelta: @Sendable (String) async throws -> Void) async throws {
@@ -88,7 +93,11 @@ private actor SubmissionClient: HermesStreaming {
         try await preflightPreservesDraft()
         try await submissionAndRetry()
         try await changedDraftDuringPreflight()
+        try await backgroundGenerationSurvivesDrawerChanges()
+        try await backgroundPreflightAndLock()
+        try await fiveRoundContextAndImages()
         print("PASS: production HermesStore draft preflight, immediate user turn, thinking, partial failure, retry, cancellation and stale callbacks")
+        print("PASS: closed/tab-switched Hermes requests continue, reopen restores progress, idle expiry waits for completion, hidden lock cancels, five complete context pairs, images excluded from history")
     }
 
     @MainActor private static func preflightPreservesDraft() async throws {
@@ -207,5 +216,130 @@ private actor SubmissionClient: HermesStreaming {
         try await Task.sleep(for: .milliseconds(50))
         try require(await client.count == 1 && store.turns.count == 1 && store.input == "取消后的草稿",
                     "Cancelled file preflight accepted a late submission or consumed the new draft")
+    }
+
+    @MainActor private static func backgroundGenerationSurvivesDrawerChanges() async throws {
+        let client = SubmissionClient()
+        let store = HermesStore(client: client, idleExpirationDelay: .milliseconds(120))
+        defer { store.clear(); store.disappeared("primary"); store.disappeared("secondary") }
+        store.appeared("primary")
+        store.appeared("secondary")
+        store.input = "收起后继续回答"
+        store.send()
+        try await eventually { await client.count == 1 }
+        let turnID = store.turns[0].id
+        store.disappeared("primary")
+        try await client.emit("第一段")
+        store.disappeared("secondary")
+        try await Task.sleep(for: .milliseconds(280)) // Longer than the fixture's entire idle interval.
+        try require(store.isGenerating && store.turns[0].id == turnID,
+                    "Last drawer close cancelled or expired the active request")
+        try await client.emit("，后台第二段")
+        try await eventually { store.answer == "第一段，后台第二段" }
+        store.appeared("primary")
+        try require(store.turns.count == 1 && store.turns[0].status == .responding,
+                    "Reopening lost the in-flight turn or created another submission")
+        store.disappeared("primary")
+        try await client.emit("，完成")
+        await client.finish()
+        try await eventually { !store.isGenerating }
+        try require(store.turns[0].status == .completed && store.answer == "第一段，后台第二段，完成",
+                    "Background completion lost the answer")
+        store.appeared("primary")
+        try await Task.sleep(for: .milliseconds(280))
+        let requestCount = await client.count
+        try require(store.turns.count == 1 && requestCount == 1,
+                    "Reopen did not cancel idle cleanup or restarted the request")
+        store.disappeared("primary")
+        try await eventually { store.turns.isEmpty }
+        try require(store.answer.isEmpty && !store.isGenerating, "Idle completion did not release the conversation")
+    }
+
+    @MainActor private static func backgroundPreflightAndLock() async throws {
+        let client = SubmissionClient()
+        let store = HermesStore(client: client, idleExpirationDelay: .milliseconds(120))
+        defer { store.clear(); store.disappeared("primary"); SurfaceAccess.shared.suspended = false }
+        SurfaceAccess.shared.suspended = true
+        store.appeared("primary")
+        store.includesNote = true
+        store.input = "预检期间收起"
+        store.send()
+        try await eventually { SurfaceAccess.shared.waiting != nil }
+        store.disappeared("primary")
+        try await Task.sleep(for: .milliseconds(280))
+        try require(store.isGenerating && store.isPreparingRequest && store.input == "预检期间收起",
+                    "Closing during file preflight cancelled or expired the draft")
+        SurfaceAccess.shared.waiting?.resume(returning: "\n便签上下文")
+        SurfaceAccess.shared.waiting = nil
+        SurfaceAccess.shared.suspended = false
+        try await eventually { await client.count == 1 }
+        try require(store.input.isEmpty && store.turns[0].status == .thinking,
+                    "Closed preflight did not submit exactly once")
+        try await client.emit("锁屏前片段")
+        NotificationCenter.default.post(name: .islandLocked, object: nil)
+        try await eventually { !store.isGenerating }
+        try await eventually { await client.activeCount == 0 }
+        try require(store.turns.last?.status == .stopped && store.answer == "锁屏前片段",
+                    "A hidden store failed to stop on lock or lost buffered output")
+        store.appeared("primary")
+        try require(store.canRetry(store.turns[0].id), "Lock cancellation lost the explicit retry action")
+    }
+
+    @MainActor private static func fiveRoundContextAndImages() async throws {
+        let client = SubmissionClient()
+        let store = HermesStore(client: client)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("hermes-images-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { store.clear(); ShelfDropService.staged = []; try? FileManager.default.removeItem(at: directory) }
+        let image = directory.appendingPathComponent("fixture.png")
+        let bitmap = CGContext(data: nil, width: 8, height: 8, bitsPerComponent: 8, bytesPerRow: 0,
+                               space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
+        let destination = CGImageDestinationCreateWithURL(image as CFURL, UTType.png.identifier as CFString, 1, nil)!
+        CGImageDestinationAddImage(destination, bitmap.makeImage()!, nil)
+        try require(CGImageDestinationFinalize(destination), "Could not write the isolated image fixture")
+        ShelfDropService.staged = [.init(url: image, temporary: true)]
+        store.stage([NSItemProvider()])
+        try await eventually { !store.isPreparingDrop }
+        for index in 0..<7 {
+            store.input = "问题\(index)"
+            store.send()
+            try await eventually { await client.count == index + 1 }
+            let messages = await client.requests[index]
+            try require(messages.count == min(index, 5) * 2 + 1,
+                        "Context did not retain five complete exchanges (ten messages) plus current question")
+            try require(messages.first?.parts.first?.text == "问题\(max(0, index - 5))",
+                        "Context evicted the wrong oldest exchange")
+            try require(messages.dropLast().allSatisfy { $0.parts.allSatisfy { $0.imageURL == nil } },
+                        "An earlier image was retained in model context")
+            try require(messages.last?.parts.compactMap(\.imageURL).count == (index == 0 ? 1 : 0),
+                        "Current attachment was lost or leaked into another request")
+            try await client.emit("回答\(index)")
+            await client.finish()
+            try await eventually { !store.isGenerating }
+            try require(store.turns.count == min(index + 1, 5)
+                        && store.turns.first?.prompt == "问题\(max(0, index - 4))",
+                        "Visible transcript did not evict whole turns at five exchanges")
+            try require(!FileManager.default.fileExists(atPath: image.path),
+                        "Completed request retained its temporary image source")
+        }
+        try await eventually { await client.activeCount == 0 }
+
+        // Cancellation ends the encoded request; only the temporary source URL remains for
+        // an explicit retry. Clearing the conversation releases that source as well.
+        let retryDestination = CGImageDestinationCreateWithURL(image as CFURL, UTType.png.identifier as CFString, 1, nil)!
+        CGImageDestinationAddImage(retryDestination, bitmap.makeImage()!, nil)
+        try require(CGImageDestinationFinalize(retryDestination), "Could not recreate the isolated image fixture")
+        store.stage([NSItemProvider()])
+        try await eventually { !store.isPreparingDrop }
+        store.input = "停止带图请求"
+        store.send()
+        try await eventually { await client.count == 8 }
+        store.stop()
+        try await eventually { await client.activeCount == 0 }
+        try require(store.canRetry(store.turns.last!.id) && FileManager.default.fileExists(atPath: image.path),
+                    "Explicit cancellation lost the source required for retry")
+        store.clear()
+        try require(!FileManager.default.fileExists(atPath: image.path) && store.turns.isEmpty && store.attachments.isEmpty,
+                    "Clear retained a cancelled request's temporary image or history")
     }
 }

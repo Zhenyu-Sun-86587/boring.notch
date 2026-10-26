@@ -24,8 +24,9 @@ func sseMultilineAndLimits() throws {
 func conversationEvictsWholeTurns() throws {
     var conversation = Conversation()
     for index in 0..<12 { conversation.append(user: "\(index)", assistant: "reply") }
-    try expect(conversation.turns.count == 8)
-    try expect(conversation.turns.first?.user == "4")
+    try expect(conversation.turns.count == 5)
+    try expect(conversation.turns.first?.user == "7")
+    try expect(conversation.messages.count == 10)
     conversation.append(user: "large", assistant: String(repeating: "x", count: 262_145))
     try expect(conversation.turns.isEmpty)
     try expect(Conversation.needsWideLayout("| A | B |\n|---|---|"))
