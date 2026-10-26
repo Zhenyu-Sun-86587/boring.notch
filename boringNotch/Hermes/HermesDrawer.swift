@@ -59,7 +59,7 @@ struct HermesDrawer: View {
                 TextField("Ask Hermes…", text: $store.input, axis: .vertical)
                     .lineLimit(1...4).textFieldStyle(.plain).focused($inputFocused)
                     .onSubmit { store.send() }
-                    .onKeyPress(.return) { key in
+                    .onKeyPress(.return, phases: .down) { key in
                         let composing = (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() ?? false
                         guard !key.modifiers.contains(.shift), !composing else { return .ignored }
                         store.send()
