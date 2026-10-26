@@ -33,13 +33,35 @@ final class ClipboardPresentation: ObservableObject {
     private var pointerScreens = Set<String>()
     private var outsideClickMonitor: Any?
     private var localClickMonitor: Any?
+    private static let diagnosticQueue = DispatchQueue(label: "BoringNotch.clipboard.diagnostics")
 
-    /// Opt-in launch diagnostics. Never log clipboard bytes, AX values or window titles.
-    /// stderr also works when unified logging discards an accessory application's NSLog.
+    /// Opt-in metadata only: no clipboard bytes, AX values or window titles. A bounded
+    /// cache log also works when LaunchServices cannot redirect a sandboxed app's stderr.
     private func tracePaste(_ stage: String, _ detail: String = "") {
         guard CommandLine.arguments.contains("--clipboard-diagnostics") else { return }
         let line = "CLIPBOARD_TRACE \(ProcessInfo.processInfo.systemUptime) \(stage) \(detail)\n"
         FileHandle.standardError.write(Data(line.utf8))
+        guard Bundle.main.bundleIdentifier == "theboringteam.boringnotch",
+              let cache = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return }
+        Self.diagnosticQueue.async {
+            do {
+                let directory = cache.appendingPathComponent("ClipboardDiagnostics", isDirectory: true)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                let url = directory.appendingPathComponent("paste-stages.log")
+                if !FileManager.default.fileExists(atPath: url.path) {
+                    FileManager.default.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600])
+                }
+                let file = try FileHandle(forWritingTo: url)
+                defer { try? file.close() }
+                if try file.seekToEnd() > 131_072 {
+                    try file.truncate(atOffset: 0)
+                    try file.seek(toOffset: 0)
+                }
+                try file.write(contentsOf: Data(line.utf8))
+            } catch {
+                // Opt-in logging must never change a clipboard action's outcome.
+            }
+        }
     }
 
     func configure(windowManager: NotchWindowManager) {
@@ -101,7 +123,12 @@ final class ClipboardPresentation: ObservableObject {
         observers.append(NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification,
             object: nil, queue: .main) { [weak self] note in
                 guard let window = note.object as? NSWindow, !(window is BoringNotchSkyLightWindow) else { return }
-                MainActor.assumeIsolated { self?.targetInvalidatedByOwnEditor = true }
+                MainActor.assumeIsolated {
+                    guard let self, self.sessionPresented || self.pasteActionID != nil
+                            || self.keyboardTargetApplication != nil else { return }
+                    self.targetInvalidatedByOwnEditor = true
+                    if self.pasteActionID != nil { self.cancelPendingPaste(cause: "own-editor-became-key") }
+                }
             })
         observers.append(NotificationCenter.default.addObserver(forName: Notification.Name("ClipboardPasteRequested"), object: nil, queue: .main) { [weak self] note in
             let sessionID = note.userInfo?["sessionID"] as? String
@@ -260,8 +287,22 @@ final class ClipboardPresentation: ObservableObject {
     /// The generic notch shortcut can restore Clipboard on its already-selected display.
     func beginKeyboardSession(on viewModel: BoringViewModel) {
         guard windowManager?.isScreenLocked == false, !BoringViewCoordinator.shared.firstLaunch else { return }
+        prepareNewSessionTarget()
+        sessionPresented = true
+        ClipboardStore.shared.beginSession()
+        keyboardScreenUUID = viewModel.screenUUID
+        keyboardPointerEntered = viewModel.screenUUID.map { pointerScreens.contains($0) } ?? false
+        ClipboardStore.shared.keyboardSessionActive = true
+        viewModel.open(tab: .clipboard)
+        if let screen = viewModel.screenUUID, let panel = window(on: screen) as? BoringNotchSkyLightWindow {
+            panel.orderFrontRegardless()
+            if keyboardTargetReady { panel.allowsIslandKeyboard = true; panel.makeKey() }
+        }
+    }
+
+    private func prepareNewSessionTarget() {
         cancelPendingPaste()
-        // A fresh explicit shortcut after switching to another editor is a new destination.
+        // A fresh pointer/shortcut entry after switching editors is a new destination.
         // A Hermes -> Clipboard switch while our panel owns key retains the original snapshot.
         let ownEditorIsKey = NSApp.keyWindow.map { !($0 is BoringNotchSkyLightWindow) } ?? false
         if ownEditorIsKey {
@@ -273,16 +314,6 @@ final class ClipboardPresentation: ObservableObject {
             endKeyboardTarget()
         }
         prepareKeyboardTarget()
-        sessionPresented = true
-        ClipboardStore.shared.beginSession()
-        keyboardScreenUUID = viewModel.screenUUID
-        keyboardPointerEntered = viewModel.screenUUID.map { pointerScreens.contains($0) } ?? false
-        ClipboardStore.shared.keyboardSessionActive = true
-        viewModel.open(tab: .clipboard)
-        if let screen = viewModel.screenUUID, let panel = window(on: screen) as? BoringNotchSkyLightWindow {
-            panel.orderFrontRegardless()
-            if keyboardTargetReady { panel.allowsIslandKeyboard = true; panel.makeKey() }
-        }
     }
 
     /// Called with the view's current state, not a queued transition's old value.
@@ -326,8 +357,7 @@ final class ClipboardPresentation: ObservableObject {
               let screen = visibility.visibleOwners[owner],
               NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })?.displayUUID == screen,
               visibility.claimMouse(owner: owner) else { return }
-        cancelPendingPaste()
-        prepareKeyboardTarget()
+        prepareNewSessionTarget()
         sessionPresented = true
         ClipboardStore.shared.beginSession()
     }

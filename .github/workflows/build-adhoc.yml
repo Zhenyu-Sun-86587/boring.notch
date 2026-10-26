@@ -55,6 +55,7 @@ jobs:
           set -euo pipefail
           python3 .github/scripts/test_clipboard_store.py 2>&1 | tee build/clipboard-store-report.txt
           python3 .github/scripts/typecheck_clipboard_presentation.py 2>&1 | tee build/clipboard-presentation-report.txt
+          python3 .github/scripts/test_clipboard_session_runtime.py 2>&1 | tee build/clipboard-session-runtime-report.txt
       - name: Verify native clipboard XPC and targeted event transport
         run: python3 .github/scripts/test_clipboard_native_event.py
       - name: Verify native window resizing without displaying UI
@@ -131,6 +132,7 @@ jobs:
             build/clipboard-paste-report.txt
             build/clipboard-store-report.txt
             build/clipboard-presentation-report.txt
+            build/clipboard-session-runtime-report.txt
             build/clipboard-alert-report.txt
             build/hermes-markdown-report.txt
             build/hermes-submission-report.txt
@@ -154,6 +156,7 @@ jobs:
             build/clipboard-paste-report.txt
             build/clipboard-store-report.txt
             build/clipboard-presentation-report.txt
+            build/clipboard-session-runtime-report.txt
             build/clipboard-alert-report.txt
             build/hermes-markdown-report.txt
             build/hermes-submission-report.txt

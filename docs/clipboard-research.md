@@ -28,12 +28,22 @@ AX 快照是可选增强：有快照时核对并恢复原窗口/控件，缺失�
 - [Apple NSAlert.layout](https://developer.apple.com/documentation/appkit/nsalert/layout())提供立即排版。独立展示 `NSAlert.window` 前完成排版，避免模板抑制框、空按钮和截断文字。
 - [Apple XPC 服务指南](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingXPCServices.html)说明服务可能被终止和重启；辅助进程中的临时焦点引用必须按会话有效性处理，不能将内存 token 当成持久状态。
 
+## 会话边界根因与修复（2026-10-27）
+
+本轮运行真实 `ClipboardStore` 与 `ClipboardPresentation` 后发现两处状态管理缺陷：
+
+1. `NSWindow.didBecomeKey` 监听在没有任何输入目标会话时，也会把“本应用编辑器打断目标”的标志置为真。设置窗口关闭后，下一次鼠标进入会捕获新的外部目标，但旧标志仍会令它立即取消；快捷键路径会提前清理标志，因此两种入口表现不同。监听现在只使已有目标会话失效，正在进行的粘贴也会取消。
+2. 鼠标入口没有执行快捷键入口已有的目标刷新逻辑。Hermes 曾保存 A 应用、用户随后进入 B 应用再用鼠标打开剪贴板时，会继续持有 A 的快照。两个入口现在共用新会话目标准备逻辑；前台已经是外部编辑器时重新捕获，仍在灵动岛内部换页时继续保留原目标。
+
+同一组行为检查对旧源码失败：原源码在“设置关闭后鼠标进入”提交 0 次，只有窗口监听修复时又在“切换外部编辑器后鼠标进入”失败。完整修改后，两种入口均提交到正确的模拟编辑器；会话期间设置窗口取得焦点仍取消，等待权限检查期间取得焦点也取消且不产生迟到反馈。每种情况都检查已写入的回退载荷和面板会话关闭。
+
+`--clipboard-diagnostics` 仅用于受控排查：提供与全局快捷键共用的原生菜单入口，并把阶段、请求编号、进程编号和布尔结果异步写入应用缓存的 `ClipboardDiagnostics/paste-stages.log`，超过 128 KiB 时清空后继续。正常启动不显示入口、不写日志；日志不包含剪贴板正文、AX 值、窗口标题或输入内容。
+
 ## 验证范围
 
-`test_clipboard_native_event.py` 首先使用注入的记录器验证生产事件构造、单一路由和前台切换取消，完全不投递系统会话事件。随后两项原生测试仅向无窗口测试进程自身或 XPC 客户端 PID 投递带标记的事件，收到后立即消费；它们仅验证隔离的定向传输。测试构建通过编译标记禁用默认 session 投递，避免误调用影响用户。
+- `test_clipboard_native_event.py` 的记录器检查生产事件构造与单一路由。其原生部分只向测试进程自身或 XPC 客户端 PID 投递带标记的事件并立即消费；这些测试不能证明生产 session 路由已被真实编辑器接受。
+- `test_clipboard_store.py` 编译运行真实 `ClipboardStore.copy`，只使用临时 history 和独立私有 pasteboard，覆盖原始文本、富文本、图片、文件字节、失败、取消和并发复制。失败 write 的注入不证明系统清空后实际写入失败时能保留旧剪贴板。
+- `test_clipboard_session_runtime.py` 执行生产 Store/Presentation 方法，仅在临时源码副本中替换 OS 单例/类型名称。应用、工作区和输入事件由被动适配器提供，设置窗口保持隐藏，操作私有 pasteboard。它验证会话状态管理，不会激活真实应用、读取用户输入、发送按键或请求权限。
+- `typecheck_clipboard_presentation.py` 编译生产 Store/Presentation/PermissionController，外部服务为被动 stub；辅助进程同样单独编译检查。
 
-上述原生定向传输是既有脚本的范围说明，本轮未运行 `test_clipboard_native_event.py`，也未发送任何真实 CGEvent。只单独运行其 `ClipboardPasteEventChecks` 的注入记录器，用生产构造函数验证一对事件和单一 session 路由。
-
-本轮新增 `test_clipboard_store.py` 编译并运行真实 `ClipboardStore.copy`，只使用临时 history 和独立命名的私有 pasteboard，验证文本/富文本/图片/文件原字节、先复制后请求、复制失败、会话结束/新会话/锁屏、载荷迟到错误和并发新复制的取消。失败 write 的注入仅证明不报告复制/粘贴成功，不证明系统 `clearContents` 后实际写入失败能保留旧剪贴板。`typecheck_clipboard_presentation.py` 只编译生产 Store/Presentation/PermissionController，所有外部依赖均为被动 stub；实际 helper/Shared 同样单独 typecheck。
-
-本轮剪贴板验证没有访问用户 general 剪贴板、AX 输入树、权限状态、真实输入或可见窗口，也没有启动、安装应用；并行的窗口布局测试有独立授权与验证边界。生产 Presentation/helper 的 nil/过期 token 应用级路径目前由静态审查和编译覆盖；真实 session 路由在 Edge、QQ 等应用中的输入行为，以及权限变更后的系统表现，仍由用户实机验收。
+实机结果仍与上述自动检查分开：当前已在专门创建的 TextEdit 测试输入中确认“选择后保留载荷，手动 ⌘V 插入原位置”的回退。电脑控制接口的部分操作会激活应用并触发设置窗口，因此这些受干扰的自动粘贴尝试不能视为正常用户路径的有效验收。旧安装进程的 TCC 日志已确认 AX 和 PostEvent 均允许，不能继续把失败统称为未授权。修复后的实际 session 事件插入、Edge/QQ 和原生快捷键/鼠标入口仍需受控实机验证。
