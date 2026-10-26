@@ -5,6 +5,9 @@ import SwiftUI
 struct ClipboardDrawer: View {
     @ObservedObject private var store = ClipboardStore.shared
     @FocusState private var searchFocused: Bool
+    @State private var rowFrames: [String: CGRect] = [:]
+    @State private var viewportHeight: CGFloat = 0
+    @State private var focusTask: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: 10) {
@@ -13,20 +16,8 @@ struct ClipboardDrawer: View {
                 TextField("搜索剪贴板", text: $store.search)
                     .textFieldStyle(.plain)
                     .focused($searchFocused)
-                    .onKeyPress(.downArrow, phases: .down) { _ in
-                        guard !isComposing else { return .ignored }
-                        store.moveSelection(1); return .handled
-                    }
-                    .onKeyPress(.upArrow, phases: .down) { _ in
-                        guard !isComposing else { return .ignored }
-                        store.moveSelection(-1); return .handled
-                    }
-                    .onKeyPress(.return, phases: .down) { key in
-                        guard !isComposing else { return .ignored }
-                        store.copySelected(paste: !key.modifiers.contains(.command)); return .handled
-                    }
                 if !store.search.isEmpty {
-                    Button { store.search = "" } label: { Image(systemName: "xmark.circle.fill") }
+                    Button { store.search = ""; focusSearch() } label: { Image(systemName: "xmark.circle.fill") }
                         .buttonStyle(.plain).foregroundStyle(.secondary).help("清空搜索")
                 }
             }
@@ -59,10 +50,8 @@ struct ClipboardDrawer: View {
                     ScrollView {
                         LazyVStack(spacing: 4) {
                             ForEach(store.filteredRecords) { record in
-                                ClipboardHistoryRow(record: record, selected: store.selectedRecord?.id == record.id)
+                                ClipboardHistoryRow(record: record, selected: store.selectedID == record.id)
                                     .contentShape(Rectangle())
-                                    .onTapGesture { store.selectedID = record.id }
-                                    .onTapGesture(count: 2) { store.copy(record, paste: true) }
                                     .contextMenu {
                                         Button("粘贴") { store.copy(record, paste: true) }
                                         Button("复制") { store.copy(record, paste: false) }
@@ -70,12 +59,42 @@ struct ClipboardDrawer: View {
                                         Button(record.favorite ? "取消收藏" : "收藏") { store.favorite(record) }
                                         Button("删除", role: .destructive) { store.delete(record) }
                                     }
+                                    .background {
+                                        GeometryReader { geometry in
+                                            Color.clear.preference(key: ClipboardRowFrames.self,
+                                                value: [record.id: geometry.frame(in: .named("clipboardViewport"))])
+                                        }
+                                    }
                                     .id(record.id)
                             }
                         }
+                        .transaction { $0.animation = nil }
                     }
-                    .onChange(of: store.selectedID) { _, value in
-                        if let value { withAnimation(.easeOut(duration: 0.12)) { proxy.scrollTo(value, anchor: .center) } }
+                    .coordinateSpace(name: "clipboardViewport")
+                    .background {
+                        GeometryReader { geometry in
+                            ClipboardPointerObserver(rowFrames: rowFrames,
+                                keyboardRevision: store.keyboardSelectionRevision,
+                                select: { id, clicked in
+                                    store.select(id)
+                                    if clicked { focusSearch() }
+                                }, activate: { id in
+                                    guard let record = store.filteredRecords.first(where: { $0.id == id }) else { return }
+                                    store.copy(record, paste: true)
+                                })
+                                .preference(key: ClipboardViewportHeight.self, value: geometry.size.height)
+                        }
+                    }
+                    .onPreferenceChange(ClipboardRowFrames.self) { rowFrames = $0 }
+                    .onPreferenceChange(ClipboardViewportHeight.self) { viewportHeight = $0 }
+                    .onChange(of: store.keyboardSelectionRevision) { _, _ in
+                        guard let id = store.selectedID,
+                              let edge = ClipboardSelectionPolicy.scrollEdge(row: rowFrames[id],
+                                viewportHeight: viewportHeight, direction: store.keyboardSelectionDirection) else { return }
+                        // Arrow keys reveal only the clipped edge; mouse selection never scrolls the list.
+                        var transaction = Transaction()
+                        transaction.disablesAnimations = true
+                        withTransaction(transaction) { proxy.scrollTo(id, anchor: edge == .top ? .top : .bottom) }
                     }
                 }
             }
@@ -99,25 +118,144 @@ struct ClipboardDrawer: View {
             .buttonStyle(.plain)
         }
         .padding(.bottom, 8)
+        .focusable()
+        .focusEffectDisabled()
+        // Keep one keyboard handler on the drawer: buttons and row clicks must not disable navigation.
+        .onKeyPress(.downArrow, phases: [.down, .repeat]) { handle(.down, press: $0) }
+        .onKeyPress(.upArrow, phases: [.down, .repeat]) { handle(.up, press: $0) }
+        .onKeyPress(.return, phases: .down) { handle(.enter, press: $0) }
+        .onKeyPress(.escape, phases: .down) { handle(.escape, press: $0) }
         .onAppear {
             store.start()
             if store.keyboardSessionActive { focusSearch() }
         }
         .onChange(of: store.keyboardSessionActive) { _, value in
-            if value { focusSearch() } else { searchFocused = false }
+            if value { focusSearch() } else { focusTask?.cancel(); searchFocused = false }
         }
-        .onChange(of: store.search) { _, _ in store.selectedID = store.filteredRecords.first?.id }
-        .onDisappear { searchFocused = false }
-        .onKeyPress(.escape, phases: .down) { _ in
-            guard !isComposing else { return .ignored }
-            NotificationCenter.default.post(name: .clipboardDismissRequested, object: nil)
-            return .handled
-        }
+        .onDisappear { focusTask?.cancel(); focusTask = nil; searchFocused = false; rowFrames = [:] }
     }
+
     private var isComposing: Bool { (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() ?? false }
-    private func focusSearch() {
-        Task { @MainActor in await Task.yield(); searchFocused = true }
+    private func handle(_ key: ClipboardSelectionPolicy.Key, press: KeyPress) -> KeyPress.Result {
+        switch ClipboardSelectionPolicy.action(for: key, repeating: press.phase == .repeat,
+                                                command: press.modifiers.contains(.command), composing: isComposing) {
+        case .move(let direction): store.moveSelection(direction)
+        case .activate(let paste): store.copySelected(paste: paste)
+        case .dismiss: store.dismiss()
+        case .ignored: return .ignored
+        }
+        return .handled
     }
+    private func focusSearch() {
+        focusTask?.cancel()
+        let session = store.sessionID
+        focusTask = Task { @MainActor in
+            await Task.yield()
+            guard !Task.isCancelled, store.sessionID == session else { return }
+            searchFocused = true
+        }
+    }
+}
+
+private struct ClipboardRowFrames: PreferenceKey {
+    static let defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
+private struct ClipboardViewportHeight: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+}
+
+/// Observe local events without becoming a hit target or stealing the search field's first responder.
+/// A single observer covers the visible list; native context menus and scrolling keep their events.
+private struct ClipboardPointerObserver: NSViewRepresentable {
+    let rowFrames: [String: CGRect]
+    let keyboardRevision: UInt
+    let select: (String, Bool) -> Void
+    let activate: (String) -> Void
+
+    final class ObserverView: NSView {
+        var rowFrames: [String: CGRect] = [:]
+        var select: ((String, Bool) -> Void)?
+        var activate: ((String) -> Void)?
+        private var keyboardRevision: UInt?
+        private var pointerGate = ClipboardPointerSelectionGate()
+        private var monitor: Any?
+        private var pointerTracking: NSTrackingArea?
+
+        override var isFlipped: Bool { true }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        func receive(rowFrames: [String: CGRect], keyboardRevision: UInt,
+                     select: @escaping (String, Bool) -> Void, activate: @escaping (String) -> Void) {
+            self.rowFrames = rowFrames
+            self.select = select
+            self.activate = activate
+            if self.keyboardRevision != keyboardRevision {
+                self.keyboardRevision = keyboardRevision
+                pointerGate.keyboardNavigated(pointerAt: NSEvent.mouseLocation)
+            }
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            stopMonitoring()
+            guard window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .mouseMoved]) { [weak self] event in
+                MainActor.assumeIsolated { self?.handle(event) }
+                return event
+            }
+        }
+
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            if let pointerTracking { removeTrackingArea(pointerTracking) }
+            let tracking = NSTrackingArea(rect: .zero, options: [.mouseMoved, .activeAlways, .inVisibleRect],
+                                          owner: self, userInfo: nil)
+            addTrackingArea(tracking)
+            pointerTracking = tracking
+        }
+
+        private func handle(_ event: NSEvent) {
+            guard let window, event.window === window, window.isVisible, !isHiddenOrHasHiddenAncestor else { return }
+            // Overlay scrollers cover row geometry, but clicking their thumb/track is scrolling,
+            // never row selection or double-click paste. hitTest expects its superview's coordinates.
+            if let contentView = window.contentView {
+                let hitPoint = contentView.superview?.convert(event.locationInWindow, from: nil)
+                    ?? event.locationInWindow
+                var hit = contentView.hitTest(hitPoint)
+                while let view = hit {
+                    if view is NSScroller { return }
+                    hit = view.superview
+                }
+            }
+            let point = convert(event.locationInWindow, from: nil)
+            guard let id = ClipboardSelectionPolicy.hitID(at: point, viewport: bounds.intersection(visibleRect),
+                                                          rows: rowFrames) else { return }
+            if event.type == .leftMouseDown {
+                // mouseDown is immediate; separate competing tap recognizers delay a single selection.
+                select?(id, true)
+                if event.clickCount == 2 { activate?(id) }
+            } else if event.type == .mouseMoved,
+                      pointerGate.acceptsMovement(at: NSEvent.mouseLocation,
+                        delta: CGSize(width: event.deltaX, height: event.deltaY)) {
+                select?(id, false)
+            }
+        }
+
+        func stopMonitoring() {
+            if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
+        }
+    }
+
+    func makeNSView(context: Context) -> ObserverView { ObserverView(frame: .zero) }
+    func updateNSView(_ view: ObserverView, context: Context) {
+        view.receive(rowFrames: rowFrames, keyboardRevision: keyboardRevision, select: select, activate: activate)
+    }
+    static func dismantleNSView(_ view: ObserverView, coordinator: ()) { view.stopMonitoring() }
 }
 
 private struct ClipboardHistoryRow: View {
@@ -141,8 +279,7 @@ private struct ClipboardHistoryRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(record.title).lineLimit(2).font(.callout).frame(maxWidth: .infinity, alignment: .leading)
                 HStack(spacing: 6) {
-                    if let source = record.sourceName { Text(source).lineLimit(1) }
-                    Text(record.copiedAt, style: .relative).lineLimit(1)
+                    if let source = record.sourceName, !source.isEmpty { Text(source).lineLimit(1) }
                     if record.itemCount > 1 { Text("\(record.itemCount) 项") }
                 }
                 .font(.caption2).foregroundStyle(.secondary)

@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Defaults
+import IslandCore
 import SwiftUI
 
 /// One notch page serves pointer and keyboard entry; only the latter pins it open.
@@ -10,6 +11,8 @@ final class ClipboardPresentation: ObservableObject {
     @Published private(set) var keyboardScreenUUID: String?
     private weak var windowManager: NotchWindowManager?
     private var observers: [NSObjectProtocol] = []
+    private var visibility = ClipboardVisibilityState()
+    private var ownerWindows: [UUID: ObjectIdentifier] = [:]
     private var sessionPresented = false
     private var previousView: NotchViews = .home
     private var pasteTask: Task<Void, Never>?
@@ -28,6 +31,10 @@ final class ClipboardPresentation: ObservableObject {
                 guard sessionID == ClipboardStore.shared.sessionID.uuidString else { return }
                 self?.dismiss()
             }
+        })
+        observers.append(NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { [weak self] note in
+            guard let window = note.object as? NSWindow else { return }
+            MainActor.assumeIsolated { self?.windowWillClose(window) }
         })
     }
 
@@ -66,8 +73,47 @@ final class ClipboardPresentation: ObservableObject {
         }
     }
 
-    func captureMouseTarget() {
-        guard !ClipboardStore.shared.keyboardSessionActive, !sessionPresented else { return }
+    /// Called with the view's current state, not a queued transition's old value.
+    func updateVisibility(owner: UUID, screenUUID: String?, visible: Bool) {
+        let isVisible = visible && windowManager?.isScreenLocked == false
+            && BoringViewCoordinator.shared.currentView == .clipboard
+        let ownedMouse = visibility.mouseOwner == owner
+        let previousScreen = visibility.visibleOwners[owner]
+        visibility.setVisible(isVisible, owner: owner, screen: screenUUID)
+        if isVisible, let previousScreen, keyboardScreenUUID == previousScreen, let screenUUID {
+            keyboardScreenUUID = screenUUID
+        }
+        if isVisible, let screenUUID, let window = window(on: screenUUID) {
+            ownerWindows[owner] = ObjectIdentifier(window)
+        } else { ownerWindows.removeValue(forKey: owner) }
+
+        if !isVisible && ownedMouse { pasteTask?.cancel(); pasteTask = nil }
+        if !isVisible, let previousScreen, keyboardScreenUUID == previousScreen,
+           !visibility.contains(screen: previousScreen) {
+            pasteTask?.cancel(); pasteTask = nil
+            keyboardScreenUUID = nil
+            ClipboardStore.shared.keyboardSessionActive = false
+        }
+        if !visibility.hasVisibleDrawer && keyboardScreenUUID == nil { endKeepingWindow() }
+        if isVisible { captureMouseTarget(owner: owner) }
+    }
+
+    private func window(on screenUUID: String) -> NSWindow? {
+        guard let manager = windowManager else { return nil }
+        if Defaults[.displayMode] == .allDisplays { return manager.contexts[screenUUID]?.window }
+        return manager.primaryViewModel.screenUUID == screenUUID ? manager.primaryWindow : nil
+    }
+
+    private func windowWillClose(_ window: NSWindow) {
+        let owners = ownerWindows.filter { $0.value == ObjectIdentifier(window) }.map(\.key)
+        for owner in owners { updateVisibility(owner: owner, screenUUID: nil, visible: false) }
+    }
+
+    private func captureMouseTarget(owner: UUID) {
+        guard !ClipboardStore.shared.keyboardSessionActive,
+              let screen = visibility.visibleOwners[owner],
+              NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })?.displayUUID == screen,
+              visibility.claimMouse(owner: owner) else { return }
         pasteTask?.cancel()
         pasteTask = nil
         sessionPresented = true
@@ -79,6 +125,8 @@ final class ClipboardPresentation: ObservableObject {
         // not cancel the new delayed paste task installed by that same action.
         guard sessionPresented else { return }
         sessionPresented = false
+        visibility.reset()
+        ownerWindows = [:]
         pasteTask?.cancel()
         pasteTask = nil
         keyboardScreenUUID = nil
@@ -103,7 +151,8 @@ final class ClipboardPresentation: ObservableObject {
     }
 
     private func paste(to pid: Int32?, sessionID: String?) {
-        guard sessionPresented, sessionID == ClipboardStore.shared.sessionID.uuidString else { return }
+        guard sessionPresented, keyboardScreenUUID != nil || visibility.mouseOwner != nil,
+              sessionID == ClipboardStore.shared.sessionID.uuidString else { return }
         pasteTask?.cancel()
         guard let pid, let target = NSRunningApplication(processIdentifier: pid), !target.isTerminated,
               target.bundleIdentifier != Bundle.main.bundleIdentifier else {

@@ -97,6 +97,8 @@ func expectThrowsAsync<T>(_ body: () async throws -> T) async throws {
         try await coordinatedAppendOnlyTouchesFixture()
         try singleMarkdownFileReadsAtomicReplacements()
         try await runClipboardHistoryChecks()
+        try runClipboardSelectionChecks()
+        try clipboardVisibilityChecks()
         try imageIsDownsampledBeforeEncoding()
         print("PASS: IslandCore checks (UTF-8 boundaries, SSE limits, FIFO, BOM/CRLF, concurrent atomic append, ImageIO downsampling)")
     }

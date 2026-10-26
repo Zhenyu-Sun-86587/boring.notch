@@ -34,6 +34,7 @@ extension SkyLightOperator {
 class BoringNotchSkyLightWindow: NSPanel {
     private var isSkyLightEnabled: Bool = false
     var allowsIslandKeyboard = false
+    var islandKeyboardOwner: UUID?
     var isIslandScreenLocked = false
 
     override init(

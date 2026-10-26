@@ -30,6 +30,7 @@ struct ContentView: View {
     @AppStorage("island.hermesWidth") private var hermesWidth = 640.0
     @AppStorage("island.hermesWideWidth") private var hermesWideWidth = 920.0
 
+    @State private var clipboardVisibilityOwner = UUID()
     @State private var hoverTask: Task<Void, Never>?
     @State private var isHovering: Bool = false
     @State private var anyDropDebounceTask: Task<Void, Never>?
@@ -385,17 +386,17 @@ struct ContentView: View {
                                       wantsKeyboard: vm.notchState == .open && (coordinator.currentView == .hermes || coordinator.currentView == .clipboard),
                                       permitsKeyboardWithoutHover: clipboard.keyboardSessionActive && clipboardPresentation.keyboardScreenUUID == vm.screenUUID))
         .onChange(of: coordinator.currentView) { old, new in
-            if old == .clipboard && new != .clipboard { clipboardPresentation.endKeepingWindow() }
-            if new == .clipboard { clipboardPresentation.captureMouseTarget() }
+            syncClipboardVisibility()
+            if coordinator.currentView != .clipboard { clipboardPresentation.endKeepingWindow() }
             updateIslandSize()
         }
         .onChange(of: hermesWidth) { updateIslandSize() }
-        .onChange(of: vm.screenUUID) { updateIslandSize() }
+        .onChange(of: vm.screenUUID) { syncClipboardVisibility(); updateIslandSize() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in updateIslandSize() }
         .onChange(of: hermesWideWidth) { updateIslandSize() }
         .onChange(of: hermes.isWide) { updateIslandSize() }
         .onChange(of: vm.notchState) { _, state in
-            if state == .closed && clipboardPresentation.keyboardScreenUUID == vm.screenUUID { clipboardPresentation.endKeepingWindow() }
+            syncClipboardVisibility()
             updateIslandSize()
         }
         .ignoresSafeArea(.all)
@@ -409,6 +410,10 @@ struct ContentView: View {
         .background(dragDetector)
         .preferredColorScheme(.dark)
         .environmentObject(vm)
+        .onAppear { syncClipboardVisibility() }
+        .onDisappear {
+            clipboardPresentation.updateVisibility(owner: clipboardVisibilityOwner, screenUUID: nil, visible: false)
+        }
         .onChange(of: dropInteraction.anyDropZoneTargeting) { _, isTargeted in
             anyDropDebounceTask?.cancel()
 
@@ -436,6 +441,11 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    private func syncClipboardVisibility() {
+        clipboardPresentation.updateVisibility(owner: clipboardVisibilityOwner, screenUUID: vm.screenUUID,
+            visible: vm.notchState == .open && coordinator.currentView == .clipboard)
     }
 
     private var islandWindowSize: CGSize {
@@ -914,6 +924,7 @@ extension ContentView {
         hoverTask?.cancel()
 
         if hovering {
+            syncClipboardVisibility()
             withAnimation(animationSpring) {
                 isHovering = true
             }

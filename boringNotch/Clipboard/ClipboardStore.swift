@@ -13,9 +13,16 @@ extension Notification.Name {
 @MainActor
 final class ClipboardStore: ObservableObject {
     static let shared = ClipboardStore()
-    @Published private(set) var records: [ClipboardHistoryRecord] = []
-    @Published var search = ""
-    @Published var selectedID: String?
+    @Published private(set) var records: [ClipboardHistoryRecord] = [] {
+        didSet { rebuildResults() }
+    }
+    @Published var search = "" {
+        didSet { if search != oldValue { rebuildResults(resetSelection: true) } }
+    }
+    @Published private(set) var filteredRecords: [ClipboardHistoryRecord] = []
+    @Published private(set) var selectedID: String?
+    @Published private(set) var keyboardSelectionRevision: UInt = 0
+    private(set) var keyboardSelectionDirection = 1
     @Published var keyboardSessionActive = false
     @Published private(set) var message: String?
     @Published private(set) var busy = false
@@ -74,18 +81,36 @@ final class ClipboardStore: ObservableObject {
         thumbnailCache.countLimit = 24
         thumbnailCache.totalCostLimit = 12 * 1_024 * 1_024
     }
-    var filteredRecords: [ClipboardHistoryRecord] {
+    var selectedRecord: ClipboardHistoryRecord? { filteredRecords.first { $0.id == selectedID } }
+
+    private func rebuildResults(resetSelection: Bool = false) {
+        let previousIndex = filteredRecords.firstIndex { $0.id == selectedID } ?? 0
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
-        return records.filter {
+        let updated = records.filter {
             query.isEmpty || $0.searchableText.localizedStandardContains(query)
                 || $0.sourceName?.localizedStandardContains(query) == true
                 || $0.title.localizedStandardContains(query)
         }.sorted {
             if $0.favorite != $1.favorite { return $0.favorite }
-            return $0.copiedAt > $1.copiedAt
+            if $0.copiedAt != $1.copiedAt { return $0.copiedAt > $1.copiedAt }
+            return $0.id < $1.id
         }
+        // Selection updates do not re-filter/re-sort the full history on every arrow or mouse event.
+        if updated != filteredRecords { filteredRecords = updated }
+        let next = ClipboardSelectionPolicy.reconciledID(selectedID, in: updated.map(\.id),
+            fallbackIndex: resetSelection ? 0 : previousIndex, reset: resetSelection)
+        if next != selectedID { selectedID = next }
     }
-    var selectedRecord: ClipboardHistoryRecord? { filteredRecords.first { $0.id == selectedID } ?? filteredRecords.first }
+
+    func select(_ id: String) {
+        guard filteredRecords.contains(where: { $0.id == id }), selectedID != id else { return }
+        selectedID = id
+    }
+
+    func dismiss() {
+        NotificationCenter.default.post(name: .clipboardDismissRequested, object: nil,
+                                        userInfo: ["sessionID": sessionID.uuidString])
+    }
     private var limits: ClipboardHistoryLimits {
         .init(count: maximumCount, retention: Double(retentionDays) * 86_400, diskBytes: min(1_024, max(64, diskMegabytes)) * 1_024 * 1_024)
     }
@@ -101,7 +126,8 @@ final class ClipboardStore: ObservableObject {
         if let target, target.processIdentifier != ProcessInfo.processInfo.processIdentifier, !target.isTerminated {
             sessionTarget = target
         }
-        search = ""; selectedID = filteredRecords.first?.id
+        search = ""
+        rebuildResults(resetSelection: true)
         applyLimits()
     }
     func endSession() {
@@ -230,7 +256,6 @@ final class ClipboardStore: ObservableObject {
                 let updated = try await history.insert(payload, title: title, searchableText: searchable, kind: kind,
                     sourceBundleID: source?.bundleIdentifier, sourceName: source?.localizedName, limits: currentLimits)
                 records = updated
-                if selectedID == nil { selectedID = filteredRecords.first?.id }
             } catch { message = error.localizedDescription }
         }
     }
@@ -244,10 +269,11 @@ final class ClipboardStore: ObservableObject {
         }
     }
     func moveSelection(_ offset: Int) {
-        let results = filteredRecords
-        guard !results.isEmpty else { selectedID = nil; return }
-        let index = results.firstIndex(where: { $0.id == selectedID }) ?? 0
-        selectedID = results[min(max(0, index + offset), results.count - 1)].id
+        let next = ClipboardSelectionPolicy.movedID(selectedID, in: filteredRecords.map(\.id), offset: offset)
+        guard next != selectedID else { return }
+        keyboardSelectionDirection = offset < 0 ? -1 : 1
+        selectedID = next
+        keyboardSelectionRevision &+= 1
     }
     func copySelected(paste: Bool) {
         guard let record = selectedRecord, !busy else { return }
@@ -323,13 +349,12 @@ final class ClipboardStore: ObservableObject {
             do {
                 records = try await history.delete(id: record.id)
                 thumbnailCache.removeObject(forKey: record.id as NSString)
-                if selectedID == record.id { selectedID = filteredRecords.first?.id }
             } catch { message = error.localizedDescription }
         }
     }
     func clear() {
         Task {
-            do { try await history.clear(); records = []; selectedID = nil; thumbnailCache.removeAllObjects() }
+            do { try await history.clear(); records = []; thumbnailCache.removeAllObjects() }
             catch { message = error.localizedDescription }
         }
     }

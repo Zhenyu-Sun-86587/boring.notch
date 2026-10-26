@@ -4,7 +4,7 @@ on:
   push:
     branches: [feat/hermes-island, 'codex/hermes-*']
   pull_request:
-    paths: ['boringNotch/**', 'Packages/IslandCore/**', 'boringNotch.xcodeproj/**', '.github/workflows/build-adhoc.yml', '.github/scripts/sign_adhoc.py', '.github/scripts/create_adhoc_dmg.sh', '.github/scripts/smoke_adhoc.py', '.github/scripts/check_chinese_localization.py', 'Shared/**', 'BoringNotchXPCHelper/**']
+    paths: ['boringNotch/**', 'Packages/IslandCore/**', 'boringNotch.xcodeproj/**', '.github/workflows/build-adhoc.yml', '.github/scripts/**', 'Shared/**', 'BoringNotchXPCHelper/**']
   workflow_dispatch:
 
 permissions:
@@ -35,6 +35,12 @@ jobs:
         run: |
           swift run --package-path Packages/IslandCore -c release IslandCoreChecks
           python3 .github/scripts/test_island_stream.py
+      - name: Verify native window resizing without displaying UI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          python3 .github/scripts/test_window_layout.py 2>&1 | tee build/window-layout-report.txt
       - name: Build ARM64 application without certificate secrets
         shell: bash
         run: |
@@ -83,6 +89,7 @@ jobs:
             build/COMMIT_SHA
             build/signing-report.txt
             build/startup-report.txt
+            build/window-layout-report.txt
           retention-days: 14
       - name: Upload build diagnostics
         if: always()
@@ -92,6 +99,7 @@ jobs:
           path: |
             build/xcodebuild.log
             build/startup-report.txt
+            build/window-layout-report.txt
           if-no-files-found: ignore
           # Keep the resolved dependency graph with diagnostics for reproducibility.
       - name: Upload resolved package versions

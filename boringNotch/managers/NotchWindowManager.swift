@@ -160,7 +160,7 @@ final class NotchWindowManager {
             window.disableSkyLight()
         }
 
-        window.contentView = NSHostingView(
+        window.contentView = makeNotchHostingView(
             rootView: ContentView()
                 .environmentObject(viewModel)
         )
