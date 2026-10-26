@@ -469,7 +469,7 @@ private struct WorkspaceRequestProbe: NSViewRepresentable {
     }, "Closed intrinsic measurement followed the animated shell instead of natural content: \(closedIntrinsic.prefix(16))")
     try requireWorkspace(compactIntrinsic.count > 10
         && (compactIntrinsic.max()! - compactIntrinsic.min()!) <= 1,
-        "Compact natural height followed its animated destination")
+        "Compact natural height followed its animated destination: \(compactIntrinsic)")
     try requireWorkspace(metrics.samples.count > 20 && metrics.displayCycleLayouts > 0,
         "Fixture lacked geometry/display-cycle evidence: samples=\(metrics.samples.count), layouts=\(metrics.layouts), displayCycles=\(metrics.displayCycleLayouts)")
     let centerError = metrics.samples.map(\.centerError).max() ?? .infinity
