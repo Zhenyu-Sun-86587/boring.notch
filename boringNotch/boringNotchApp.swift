@@ -161,6 +161,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return false
     }
 
+    @MainActor @objc private func openClipboardDiagnostic() {
+        ClipboardPresentation.shared.toggle()
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         if LegacyAppBundleMigration.isRelaunching { return }
 
@@ -368,6 +372,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         windowManager.prepareInitialWindows()
         ClipboardPresentation.shared.configure(windowManager: windowManager)
+        if CommandLine.arguments.contains("--clipboard-diagnostics"),
+           let menu = NSApp.mainMenu?.items.first?.submenu {
+            // The same entry point as the global shortcut, exposed to native accessibility
+            // automation during opt-in diagnosis. It never synthesizes a shortcut itself.
+            let item = NSMenuItem(title: "打开剪贴板（诊断）", action: #selector(openClipboardDiagnostic), keyEquivalent: "")
+            item.target = self
+            menu.insertItem(item, at: max(0, menu.items.count - 1))
+        }
         ClipboardStore.shared.start()
         KeyboardShortcuts.onKeyUp(for: .toggleClipboard) { [weak self] in
             Task { @MainActor in
