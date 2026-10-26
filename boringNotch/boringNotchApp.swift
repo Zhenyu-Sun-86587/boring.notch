@@ -334,7 +334,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         do {
                             try await Task.sleep(for: .seconds(3))
                             await MainActor.run {
-                                viewModel?.close()
+                                if self.coordinator.currentView != .hermes && self.coordinator.currentView != .clipboard {
+                                    viewModel?.close()
+                                }
                             }
                         } catch { }
                     }
@@ -353,8 +355,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         windowManager.prepareInitialWindows()
         ClipboardPresentation.shared.configure(windowManager: windowManager)
         ClipboardStore.shared.start()
-        KeyboardShortcuts.onKeyUp(for: .toggleClipboard) {
-            Task { @MainActor in ClipboardPresentation.shared.toggle() }
+        KeyboardShortcuts.onKeyUp(for: .toggleClipboard) { [weak self] in
+            Task { @MainActor in
+                self?.closeNotchTask?.cancel()
+                self?.closeNotchTask = nil
+                ClipboardPresentation.shared.toggle()
+            }
         }
 
         displayModeTask = Task { @MainActor [weak self] in

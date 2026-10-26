@@ -19,10 +19,15 @@ final class ClipboardPresentation: ObservableObject {
         guard observers.isEmpty else { return }
         observers.append(NotificationCenter.default.addObserver(forName: Notification.Name("ClipboardPasteRequested"), object: nil, queue: .main) { [weak self] note in
             let pid = (note.userInfo?["targetPID"] as? NSNumber)?.int32Value
-            Task { @MainActor in self?.paste(to: pid) }
+            let sessionID = note.userInfo?["sessionID"] as? String
+            Task { @MainActor in self?.paste(to: pid, sessionID: sessionID) }
         })
-        observers.append(NotificationCenter.default.addObserver(forName: Notification.Name("ClipboardDismissRequested"), object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.dismiss() }
+        observers.append(NotificationCenter.default.addObserver(forName: Notification.Name("ClipboardDismissRequested"), object: nil, queue: .main) { [weak self] note in
+            let sessionID = note.userInfo?["sessionID"] as? String
+            Task { @MainActor in
+                guard sessionID == ClipboardStore.shared.sessionID.uuidString else { return }
+                self?.dismiss()
+            }
         })
     }
 
@@ -97,7 +102,8 @@ final class ClipboardPresentation: ObservableObject {
         }
     }
 
-    private func paste(to pid: Int32?) {
+    private func paste(to pid: Int32?, sessionID: String?) {
+        guard sessionPresented, sessionID == ClipboardStore.shared.sessionID.uuidString else { return }
         pasteTask?.cancel()
         guard let pid, let target = NSRunningApplication(processIdentifier: pid), !target.isTerminated,
               target.bundleIdentifier != Bundle.main.bundleIdentifier else {

@@ -92,15 +92,21 @@ final class HermesStore: ObservableObject {
         let prompt = input
         guard prompt.utf8.count <= 65_536 else { message = "输入超过 64 KB。"; return }
         let staged = attachments
-        let includeNote = includesNote
+        let configuration: HermesConfiguration
+        let note: NoteSelection?
+        do {
+            configuration = try IslandSettings.hermes()
+            note = includesNote ? try SurfaceAccess.shared.snapshot() : nil
+        } catch { message = error.localizedDescription; return }
         isGenerating = true; message = nil
         let id = UUID(); generationID = id
         generation = Task { [weak self] in
             guard let self else { return }
             var started = false
             do {
-                let configuration = try IslandSettings.hermes()
-                let context = includeNote ? try await SurfaceAccess.shared.context() : ""
+                let context: String
+                if let note { context = try await SurfaceAccess.shared.context(selection: note) }
+                else { context = "" }
                 let parts = try await Self.prepare(staged)
                 try Task.checkCancellation()
                 guard generationID == id else { return }
@@ -171,13 +177,15 @@ final class HermesStore: ObservableObject {
     func saveAnswer() {
         guard !isGenerating, !isSaving, !answer.isEmpty else { return }
         let text = answer
-        let name = SurfaceAccess.shared.fileName
+        let selection: NoteSelection
+        do { selection = try SurfaceAccess.shared.snapshot() }
+        catch { message = error.localizedDescription; return }
         isSaving = true
         Task {
             defer { isSaving = false }
             do {
-                try await SurfaceAccess.shared.appendTask(text)
-                message = "已保存到 \(name)"
+                try await SurfaceAccess.shared.appendTask(text, selection: selection)
+                message = "已保存到 \(selection.name)"
             } catch { message = error.localizedDescription }
         }
     }

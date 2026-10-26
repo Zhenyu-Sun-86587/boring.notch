@@ -25,6 +25,11 @@ private final class NoteFilePresenter: NSObject, NSFilePresenter, @unchecked Sen
     }
 }
 
+struct NoteSelection: Sendable {
+    let bookmark: Data
+    let name: String
+}
+
 @MainActor
 final class SurfaceAccess: ObservableObject {
     static let shared = SurfaceAccess()
@@ -85,9 +90,23 @@ final class SurfaceAccess: ObservableObject {
         return url
     }
 
+    /// Immutable identity captured before a request/save is queued.
+    func snapshot() throws -> NoteSelection {
+        guard let bookmark = UserDefaults.standard.data(forKey: "island.surfaceFileBookmark") else {
+            throw IslandError.configuration("请先选择 Markdown 文件。")
+        }
+        return NoteSelection(bookmark: bookmark, name: fileName)
+    }
+
+    private func resolve(_ selection: NoteSelection) throws -> URL {
+        var stale = false
+        // An older in-flight selection must never overwrite a newly chosen bookmark.
+        return try URL(resolvingBookmarkData: selection.bookmark, options: [.withSecurityScope, .withoutUI], relativeTo: nil, bookmarkDataIsStale: &stale)
+    }
+
     /// Resolve and read again for every submission, even if a sync tool replaced the file.
-    func context() async throws -> String {
-        let file = try resolve()
+    func context(selection: NoteSelection) async throws -> String {
+        let file = try resolve(selection)
         guard file.startAccessingSecurityScopedResource() else { throw IslandError.configuration("无法访问便签，请重新选择文件。") }
         defer { file.stopAccessingSecurityScopedResource() }
         return try await Task.detached(priority: .userInitiated) {
@@ -96,8 +115,8 @@ final class SurfaceAccess: ObservableObject {
         }.value
     }
 
-    func appendTask(_ text: String) async throws {
-        let file = try resolve()
+    func appendTask(_ text: String, selection: NoteSelection) async throws {
+        let file = try resolve(selection)
         guard file.startAccessingSecurityScopedResource() else { throw IslandError.configuration("无法访问便签，请重新选择文件。") }
         defer { file.stopAccessingSecurityScopedResource() }
         try await Task.detached(priority: .userInitiated) {

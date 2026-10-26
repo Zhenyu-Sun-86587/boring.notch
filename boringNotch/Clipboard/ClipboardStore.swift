@@ -51,6 +51,7 @@ final class ClipboardStore: ObservableObject {
     private var legacyReadAllowed = false
     private var sessionTarget: NSRunningApplication?
     private var sessionGeneration = UUID()
+    var sessionID: UUID { sessionGeneration }
     private var copyTask: Task<Void, Never>?
     private var heldScopes: [URL] = []
     private var scopeReleaseTask: Task<Void, Never>?
@@ -86,7 +87,7 @@ final class ClipboardStore: ObservableObject {
     }
     var selectedRecord: ClipboardHistoryRecord? { filteredRecords.first { $0.id == selectedID } ?? filteredRecords.first }
     private var limits: ClipboardHistoryLimits {
-        .init(count: maximumCount, retention: Double(retentionDays) * 86_400, diskBytes: diskMegabytes * 1_024 * 1_024)
+        .init(count: maximumCount, retention: Double(retentionDays) * 86_400, diskBytes: min(1_024, max(64, diskMegabytes)) * 1_024 * 1_024)
     }
     func start() {
         guard !started else { return }; started = true
@@ -295,13 +296,13 @@ final class ClipboardStore: ObservableObject {
                 if paste {
                     guard let target, !target.isTerminated else {
                         message = "已复制，请在目标应用中粘贴。"
-                        NotificationCenter.default.post(name: .clipboardDismissRequested, object: nil)
+                        NotificationCenter.default.post(name: .clipboardDismissRequested, object: nil, userInfo: ["sessionID": generation.uuidString])
                         return
                     }
                     NotificationCenter.default.post(name: .clipboardPasteRequested, object: nil,
-                                                    userInfo: ["targetPID": Int(target.processIdentifier)])
+                                                    userInfo: ["targetPID": Int(target.processIdentifier), "sessionID": generation.uuidString])
                 } else {
-                    NotificationCenter.default.post(name: .clipboardDismissRequested, object: nil)
+                    NotificationCenter.default.post(name: .clipboardDismissRequested, object: nil, userInfo: ["sessionID": generation.uuidString])
                 }
             } catch { scheduleScopeRelease(); message = error.localizedDescription }
         }
