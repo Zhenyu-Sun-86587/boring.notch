@@ -9,19 +9,12 @@ extension Notification.Name {
 }
 
 enum IslandSettings {
-    static let surfaceDefault = "/Users/sunzhenyu/Desktop/sync/HermesSurface"
     static func string(_ key: String) -> String { UserDefaults.standard.string(forKey: "island." + key) ?? "" }
     static func hermes() throws -> HermesConfiguration {
         let endpoint = try ServiceURL.parse(string("hermesURL"))
         let model = string("model").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !model.isEmpty else { throw IslandError.configuration("请先在设置中填写 Hermes 模型名称。") }
         return HermesConfiguration(endpoint: endpoint, model: model, apiKey: try IslandKeychain.read("hermesKey"))
-    }
-    static func todo() throws -> TodoConfiguration {
-        let excluded = Set(string("excludedProjects").split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) })
-        return TodoConfiguration(baseURL: try ServiceURL.parse(string("todoURL")), token: try IslandKeychain.read("todoToken"),
-                                 accessClientID: string("accessID"), accessClientSecret: try IslandKeychain.read("accessSecret"),
-                                 excludedProjectIDs: excluded.union([3]))
     }
 }
 
@@ -60,70 +53,76 @@ enum IslandKeychain {
 struct IslandSettingsView: View {
     @State private var hermesURL = IslandSettings.string("hermesURL")
     @State private var model = IslandSettings.string("model")
-    @State private var todoURL = IslandSettings.string("todoURL")
-    @State private var excludedProjects = IslandSettings.string("excludedProjects").isEmpty ? "3" : IslandSettings.string("excludedProjects")
-    @State private var accessID = IslandSettings.string("accessID")
     @State private var hermesKey = ""
-    @State private var todoToken = ""
-    @State private var accessSecret = ""
     @State private var message: String?
     @State private var secretsLoaded = false
     @ObservedObject private var surface = SurfaceAccess.shared
 
     var body: some View {
         Form {
-            Section("Hermes") {
-                TextField("Chat completions URL", text: $hermesURL, prompt: Text("http://host:port/v1/chat/completions"))
-                TextField("Model", text: $model)
-                SecureField("API Key", text: $hermesKey)
-                Text("填写完整流式接口地址。配置留空时不发起网络连接。")
-                    .font(.caption).foregroundStyle(.secondary)
+            Section("连接") {
+                TextField("接口地址", text: $hermesURL, prompt: Text("https://host/v1/chat/completions"))
+                TextField("模型", text: $model)
+                SecureField("API 密钥", text: $hermesKey)
+                Button("保存配置") { save() }.disabled(!secretsLoaded)
+                if let message { Text(message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
             }
-            Section("Vikunja REST") {
-                TextField("Instance URL", text: $todoURL, prompt: Text("https://todo.example.com"))
-                SecureField("API Token", text: $todoToken)
-                TextField("Excluded project IDs", text: $excludedProjects)
-                Text("使用实例根地址，项目 ID 以逗号分隔。Project 3 始终排除。")
-                    .font(.caption).foregroundStyle(.secondary)
-                TextField("Cloudflare Access Client ID (optional)", text: $accessID)
-                SecureField("Cloudflare Access Client Secret", text: $accessSecret)
+            Section("本地便签") {
+                LabeledContent("Markdown 文件") {
+                    HStack(spacing: 8) {
+                        if surface.hasFile {
+                            Text(surface.fileName).lineLimit(1).truncationMode(.middle).help(surface.filePath)
+                            Button { surface.clearSelection() } label: { Image(systemName: "xmark.circle") }
+                                .buttonStyle(.borderless).help("移除文件")
+                        }
+                        Button(surface.hasFile ? "更换…" : "选择文件…") { surface.chooseFile() }
+                    }
+                }
+                if let error = surface.errorMessage { Text(error).font(.caption).foregroundStyle(.red) }
             }
-            Section("HermesSurface") {
-                Text(surface.directoryPath).textSelection(.enabled).font(.caption)
-                Button("Choose notes folder…") { surface.chooseDirectory() }
-                Text("授权目录后，@today / @inbox 读取 Today.md / Inbox.md；存入待办仅追加 Today.md。")
-                    .font(.caption).foregroundStyle(.secondary)
+            Section("展开尺寸") {
+                HermesWidthControls()
             }
-            Button("Save configuration") { save() }.disabled(!secretsLoaded)
-            if let message { Text(message).font(.caption).textSelection(.enabled) }
         }
         .formStyle(.grouped)
-        .navigationTitle("Hermes & Todo")
+        .navigationTitle("Hermes")
         .onAppear {
             do {
                 hermesKey = try IslandKeychain.read("hermesKey")
-                todoToken = try IslandKeychain.read("todoToken")
-                accessSecret = try IslandKeychain.read("accessSecret")
                 secretsLoaded = true
             } catch { message = error.localizedDescription }
         }
     }
     private func save() {
         do {
-            if !hermesURL.isEmpty { _ = try ServiceURL.parse(hermesURL) }
-            if !todoURL.isEmpty { _ = try ServiceURL.parse(todoURL) }
-            guard excludedProjects.split(separator: ",").allSatisfy({ Int($0.trimmingCharacters(in: .whitespaces)) != nil }) else {
-                throw IslandError.configuration("排除项目必须填写逗号分隔的数字 ID。")
-            }
+            if !hermesURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { _ = try ServiceURL.parse(hermesURL) }
             try IslandKeychain.write(hermesKey, account: "hermesKey")
-            try IslandKeychain.write(todoToken, account: "todoToken")
-            try IslandKeychain.write(accessSecret, account: "accessSecret")
-            for (key, value) in ["hermesURL": hermesURL, "model": model, "todoURL": todoURL,
-                                 "excludedProjects": excludedProjects, "accessID": accessID] {
+            for (key, value) in ["hermesURL": hermesURL, "model": model] {
                 UserDefaults.standard.set(value.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "island." + key)
             }
             NotificationCenter.default.post(name: .islandConfigurationChanged, object: nil)
-            message = "配置已保存；密钥存放在钥匙串中。"
+            message = "已保存"
         } catch { message = error.localizedDescription }
+    }
+}
+
+struct HermesWidthControls: View {
+    @AppStorage("island.hermesWidth") private var width = 640.0
+    @AppStorage("island.hermesWideWidth") private var wideWidth = 920.0
+
+    var body: some View {
+        VStack(spacing: 12) {
+            widthRow("标准宽度", value: $width, range: 480...1_600)
+            widthRow("展宽宽度", value: $wideWidth, range: min(1_600, max(640, width))...1_920)
+        }
+        .onChange(of: width) { _, value in if wideWidth < value { wideWidth = value } }
+    }
+
+    private func widthRow(_ title: LocalizedStringKey, value: Binding<Double>, range: ClosedRange<Double>) -> some View {
+        HStack(spacing: 12) {
+            Text(title).frame(width: 64, alignment: .leading)
+            Slider(value: value, in: range, step: 20)
+            Text("\(Int(value.wrappedValue))").monospacedDigit().frame(width: 40, alignment: .trailing)
+        }
     }
 }

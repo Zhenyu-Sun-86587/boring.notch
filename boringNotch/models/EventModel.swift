@@ -24,7 +24,9 @@ struct EventModel: Equatable, Identifiable {
     let timeZone: TimeZone?
     let hasRecurrenceRules: Bool
     let priority: Priority?
-    var isUnscheduled: Bool = false
+    /// Video-meeting join link recovered from the event's own fields, if any.
+    /// Resolved once at fetch time — never on the view path.
+    let meetingLink: MeetingLink?
 }
 
 enum AttendanceStatus: Comparable {
@@ -68,7 +70,6 @@ extension EventType {
 }
 
 extension EventModel {
-    
     var eventStatus: EventStatus {
         if start > Date() {
             return .upcoming
@@ -78,14 +79,12 @@ extension EventModel {
             return .ended
         }
     }
-        
+
     var attendance: AttendanceStatus { if case .event(let attendance) = type { return attendance } else { return .unknown } }
 
     var isMeeting: Bool { !participants.isEmpty }
 
     func calendarAppURL() -> URL? {
-
-        if id.hasPrefix("vikunja:") { return url }
         guard let id = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else {
             return nil
         }

@@ -1,3 +1,5 @@
+> 2026-10-26 范围更新：用户确认改用上游 v2.8-rc.2；待办恢复原生 macOS 日历与提醒事项，移除 Vikunja 直连；Hermes 使用单个任意名称的 Markdown 文件，支持自定义宽度；新增快捷键与灵动岛共用的剪贴板历史并保留图片原始数据。以下为最初方案，当前配置与验收以 [docs/Hermes.md](docs/Hermes.md) 为准。
+
 # Boring Notch 二开功能需求与架构方案 (PLAN.md)
 
 > **目标受众**：Codex CLI (GPT-6.1-sol)  

@@ -37,7 +37,6 @@ func taskAppendPreservesBOMCRLFAndPrefix() throws {
     let result = try SurfaceFiles.appendingTask("New task\nDetails", to: before)
     try expect(result.starts(with: before))
     try expect(String(decoding: result, as: UTF8.self).hasSuffix("\r\n- [ ] New task\r\n  Details\r\n"))
-    try expect(SurfaceFiles.references(in: "use @TODAY and @inbox, email@example.com not@today") == ["Today.md", "Inbox.md"])
 }
 
 func coordinatedAppendOnlyTouchesFixture() async throws {
@@ -56,71 +55,6 @@ func coordinatedAppendOnlyTouchesFixture() async throws {
     }
     let final = try SurfaceFiles.read(file)
     for index in 0..<6 { try expect(final.contains("- [ ] Concurrent \(index)\n")) }
-}
-
-actor FixtureTransport: HTTPTransport {
-    var results: [HTTPResult]
-    var requests: [URLRequest] = []
-    init(_ results: [HTTPResult]) { self.results = results }
-    func execute(_ request: URLRequest) async throws -> HTTPResult {
-        requests.append(request)
-        guard !results.isEmpty else { throw IslandError.invalidResponse }
-        return results.removeFirst()
-    }
-}
-
-private func json(_ text: String, status: Int = 200, headers: [String: String] = [:]) -> HTTPResult {
-    HTTPResult(data: Data(text.utf8), status: status, headers: headers)
-}
-private let taskJSON = "{\"id\":1,\"project_id\":2,\"title\":\"Task\",\"done\":false,\"due_date\":\"2026-10-26T10:00:00Z\",\"custom_field\":42}"
-private func config() -> TodoConfiguration {
-    TodoConfiguration(baseURL: URL(string: "https://todo.example.test")!, token: "fixture")
-}
-
-func todoPaginationDedupAndExclusion() async throws {
-    let transport = FixtureTransport([
-        json("{\"openapi\":\"3.1.0\"}"),
-        json("{\"items\":[\(taskJSON)],\"total_pages\":2}"),
-        json("{\"items\":[\(taskJSON),{\"id\":2,\"project_id\":3,\"title\":\"Projection\",\"done\":false}],\"total_pages\":2}")
-    ])
-    let tasks = try await VikunjaClient(configuration: config(), transport: transport).tasks()
-    try expect(tasks.count == 1)
-    try expect(tasks[0].due != nil)
-    try expect(await transport.requests.count == 3)
-    let requestURL = await transport.requests[1].url!
-    try expect(URLComponents(url: requestURL, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "filter" })?.value == "project != 3")
-}
-
-func todoV2UsesConditionalPatch() async throws {
-    let transport = FixtureTransport([json("{\"openapi\":\"3.1.0\"}"), json(taskJSON, headers: ["ETag": "revision-1"]), json(taskJSON)])
-    try await VikunjaClient(configuration: config(), transport: transport).setCompleted(taskID: 1, completed: true)
-    let request = await transport.requests.last!
-    try expect(request.httpMethod == "PATCH")
-    try expect(request.value(forHTTPHeaderField: "If-Match") == "revision-1")
-    try expect(try JSONSerialization.jsonObject(with: request.httpBody!) as? [String: Bool] == ["done": true])
-}
-
-func todoV1PreservesUnknownFields() async throws {
-    let transport = FixtureTransport([json("", status: 404), json(taskJSON), json(taskJSON)])
-    try await VikunjaClient(configuration: config(), transport: transport).setCompleted(taskID: 1, completed: true)
-    let request = await transport.requests.last!
-    let payload = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
-    try expect(request.httpMethod == "POST")
-    try expect(payload["custom_field"] as? Int == 42)
-}
-
-func todoNeverWritesExcludedProjectOrFallsBackOnAuth() async throws {
-    let excluded = taskJSON.replacingOccurrences(of: "\"project_id\":2", with: "\"project_id\":3")
-    let transport = FixtureTransport([json("{\"openapi\":\"3.1.0\"}"), json(excluded)])
-    try await expectThrowsAsync {
-        try await VikunjaClient(configuration: config(), transport: transport).setCompleted(taskID: 1, completed: true)
-    }
-    try expect(await transport.requests.count == 2)
-    let auth = FixtureTransport([json("", status: 302)])
-    try await expectThrowsAsync {
-        try await VikunjaClient(configuration: config(), transport: auth).tasks()
-    }
-    try expect(await auth.requests.count == 1)
 }
 
 func imageIsDownsampledBeforeEncoding() throws {
@@ -161,12 +95,10 @@ func expectThrowsAsync<T>(_ body: () async throws -> T) async throws {
         try conversationEvictsWholeTurns()
         try taskAppendPreservesBOMCRLFAndPrefix()
         try await coordinatedAppendOnlyTouchesFixture()
-        try await todoPaginationDedupAndExclusion()
-        try await todoV2UsesConditionalPatch()
-        try await todoV1PreservesUnknownFields()
-        try await todoNeverWritesExcludedProjectOrFallsBackOnAuth()
+        try singleMarkdownFileReadsAtomicReplacements()
+        try await runClipboardHistoryChecks()
         try imageIsDownsampledBeforeEncoding()
-        print("PASS: 10 IslandCore checks (UTF-8 boundaries, SSE limits, FIFO, file preservation, atomic append, pagination, conditional update, v1 merge, exclusions/auth, ImageIO downsampling)")
+        print("PASS: IslandCore checks (UTF-8 boundaries, SSE limits, FIFO, BOM/CRLF, concurrent atomic append, ImageIO downsampling)")
     }
 }
 

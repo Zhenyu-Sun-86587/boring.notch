@@ -12,19 +12,21 @@ struct TabButton: View {
     let icon: String
     let selected: Bool
     let onClick: () -> Void
-    
+
     var body: some View {
         Button(action: onClick) {
             Image(systemName: icon)
-                .padding(.horizontal, 15)
+                .padding(.horizontal, 10)
                 .contentShape(Capsule())
         }
         .buttonStyle(PlainButtonStyle())
+        .help(LocalizedStringKey(label))
+        .accessibilityLabel(LocalizedStringKey(label))
     }
 }
 
 #Preview {
     TabButton(label: "Home", icon: "tray.fill", selected: true) {
-        print("Tapped")
+        Log.general.debug("Tapped")
     }
 }

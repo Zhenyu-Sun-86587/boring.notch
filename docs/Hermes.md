@@ -1,65 +1,76 @@
-# Hermes Island fork
+# Hermes Island 使用与验证
 
-This branch targets ARM64 macOS 27. Music, battery, OSD and Shelf remain available.
-Apple EventKit is replaced by the Vikunja adapter. Upstream Sparkle checks are disabled for this fork.
+当前分支以 **上游 v2.8-rc.2** 为基线，面向 Apple Silicon / macOS 27。
+应用保留音乐、电池、系统浮层、镜像、通知与暂存区。日历和提醒事项恢复为原生 EventKit；不再配置 Vikunja REST。
+Hermes 构建关闭上游 Sparkle，使用本分支 Actions 的 Ad-hoc DMG / ZIP 更新。
 
-## Configuration
+## 配置 Hermes
 
-Open Settings → **Hermes & Todo**. Service addresses, model and credentials intentionally start empty;
-the app makes no service request until an address is configured. No server configuration is performed by this fork.
+在设置的 **Hermes** 页面填写：
 
-- **Hermes:** enter the complete `http(s)://…/v1/chat/completions` endpoint, model identifier and optional API Key.
-  The gateway must return OpenAI-compatible SSE (`delta.content`, `[DONE]`). Enter submits; use Shift+Enter for a newline.
-- **Todo:** enter the Vikunja instance root (without `/dav/` or `/api/v1`) and an API token.
-  Optional Cloudflare Access Client ID / Secret are sent only to that host; redirects are rejected.
-  The client prefers v2 and falls back to v1 only for 404/405 on the v2 discovery route.
-  Project 3 is always excluded; additional comma-separated project IDs can be excluded.
-  v2 writes require an ETag and use `If-Match`; v1 preserves the latest complete payload but cannot guarantee atomic conflict detection.
-- **HermesSurface:** select `/Users/sunzhenyu/Desktop/sync/HermesSurface` once to authorize the directory.
-  `@today` / `@inbox` read the latest `Today.md` / `Inbox.md` on send; missing or unreadable files block that send.
-  **存入待办** appends one checkbox to the existing `Today.md`, with subsequent answer lines indented.
-  It does not create a remote task or import Markdown task projections into the timeline.
+- **接口地址**：完整 OpenAI Chat Completions 流式地址，例如 `https://host/v1/chat/completions`。
+- **模型**：服务实际支持的模型 ID。
+- **API 密钥**：原始 token；应用添加 Bearer 前缀。无需认证时可留空。
 
-Credentials are stored in Keychain, other preferences and the security-scoped directory bookmark in app defaults.
-No credentials, live service addresses or note contents are committed to the repository.
+连接信息初始留空，由使用者自行配置；密钥保存在钥匙串中，不写入日志或仓库。
+保存配置后新请求使用新配置，应用不会代为配置 Hermes 服务。
 
-## Interaction and resource bounds
+## 本地 Markdown 与宽度
 
-- Hover opens the existing notch; select Hermes to type. Only the panel under the pointer can take keyboard focus.
-  Leaving Hermes collapses after 350 ms; lock screen closes Hermes and cancels generation.
-- After manually selecting Hermes, dragging onto the closed notch restores Hermes and stages attachments.
-  Selecting Home or Shelf restores the original Shelf drop destination. Active drop targets prevent hover collapse.
-- Compact 640×420 / wide 920×520, clamped to the current screen. Code fences and Markdown tables widen automatically.
-- Native Textual rendering supports Markdown and `$…$` / `$$…$$` math, with a separate copy action per code block.
-  No WebKit process is introduced. Raw HTML is not executed.
-- Eight conversation turns, 256 KiB history, 128 KiB output, 64 KiB prompt / text attachment, six attachments.
-  ImageIO downsamples images to 1600 px before JPEG encoding; encoded image parts are not retained in conversation history.
-- Network generation stops when the last drawer disappears; context expires after 15 minutes closed.
-  Todo refreshes on appearance and every 60 seconds while visible; file watching uses directory events while Hermes is visible.
+在 **本地便签** 选择一个已有 `.md` 文件，文件名不限，无需选择文件夹。
+旧版目录授权不会猜测或自动绑定 `Today.md`。原文件和旧设置均保留。
 
-## Build and verification
+- 抽屉中的便签按钮决定本次发送是否引用该文件；附加状态显示文件名。
+- 发送时重新读取文件；读取失败保留输入并显示错误。
+- **保存到便签** 将回答作为复选任务追加到同一文件，多行内容缩进。
+- 写入使用文件协调、版本复查与原子替换，保留 UTF-8 BOM、既有内容和换行风格。
+- 设置页或抽屉宽度弹出菜单可调整标准/展宽宽度；按显示器可用空间限制尺寸。
 
-The **Hermes Ad-hoc Build** Action runs on branch pushes or manual dispatch. It selects Xcode 27.1,
-builds ARM64 without certificate secrets, signs nested code inside out, verifies signatures and architectures,
-then creates and verifies a compressed DMG with an Applications shortcut using native macOS disk tools.
-It uploads `Boring Notch.dmg`, `Boring Notch.app.zip`, `SHA256SUMS`, commit SHA and signing diagnostics.
-The shared scheme is tracked explicitly. No upstream release, appcast or Homebrew publication is invoked.
+监听文件和可访问的父目录，并使用 NSFilePresenter。单文件沙盒授权若不允许访问父目录，
+无法保证收到其他同步软件所有未协调的原子替换通知；实际发送仍重新读取，不复用旧上下文。
 
-Local Command Line Tools can run:
+## 日历与提醒事项
+
+在系统设置中授权当前安装版的日历和提醒事项访问，在应用的 **日历** 页面选择系统列表。
+应用读取 EventKit 已能看到的数据；第三方服务与 macOS 账户的同步由使用者自行完成。
+不要求 Hermes 或 Vikunja 地址，也不再强制排除远端 Project 3。
+
+## 剪贴板
+
+首次在 **剪贴板** 设置中主动启用记录，并按 macOS 提示允许剪贴板读取。
+默认全局快捷键是 **⌘⇧V**，可在 **快捷方式** 页面修改，避免与 Raycast 等工具冲突。
+鼠标展开后也可直接选择剪贴板标签。快捷键打开时保持展开并聚焦搜索，不要求移动鼠标。
+
+- 上下键选择；Enter 粘贴到原应用；⌘Enter 仅复制；Esc 关闭。
+- 文字、链接、富文本与图片保留本地历史，支持搜索、收藏、删除。
+- 图片保存 PNG/TIFF/JPEG 等实际原始表示，包含可用透明通道；缩略图仅用于预览。
+- 从 Finder 复制图片文件属于文件引用，与直接复制图像不同；原文件失效或授权失效时显示错误。
+- 记录按内容去重；默认 200 条、7 天、256 MB，可在设置中调整。收藏受保护，空间不足会提示。
+- 跳过机密、临时、自动生成及自身复制标记；支持排除应用；锁屏暂停采集。
+- 所有历史仅存本机，不自动发送到 Hermes，不访问网络。
+
+自动粘贴需要当前版本的系统控制/辅助功能授权，由非沙盒 XPC helper 发出粘贴按键；
+执行前复查原应用与锁屏状态。系统不回报目标应用是否接受了粘贴，因此仍需实际应用验收。
+Ad-hoc 更新可能要求重新授权；仅复制历史项目不依赖自动粘贴权限。
+
+## 自动检查
 
 ```sh
 swift run --package-path Packages/IslandCore IslandCoreChecks
 python3 .github/scripts/test_island_stream.py
+python3 .github/scripts/check_chinese_localization.py
 python3 -m unittest discover -s .github/scripts/tests -q
 ```
 
-Core checks use temporary files and fixture HTTP responses. The streaming integration binds only to localhost.
-They do not read or change real notes or tasks. Full SwiftUI app compilation requires Xcode and is validated in Actions.
+核心夹具覆盖 SSE UTF-8 分片、取消、会话淘汰、任意文件名、BOM/CRLF、并发追加、同步原子替换、
+图片下采样，以及剪贴板原始图片/透明度、重启恢复、多条项目顺序、去重、并发写入、配额与过滤。
+中文审计覆盖应用拥有的源字符串与资源；保留品牌、URL、设备名称、用户内容、服务返回内容。
 
-Manual acceptance after downloading the artifact: hover focus and Chinese composition; return to the prior app on close;
-compact/wide transitions on each display; image/text drops; tables, code and inline/display math; configured remote read/update;
-append preservation with the user's sync tool; music, battery, OSD and Shelf regression.
-Only mark these passed after observing the built application.
+Actions 使用 Xcode 27.1 / ARM64，校验嵌套签名、架构、可执行权限，并运行成品启动/XPC 只读检查，
+再生成并验证 DMG。启动检查不读取真实剪贴板、不发起 Hermes 请求、不申请权限。
 
-Measure physical footprint and CPU for both original and fork under the same idle, music and chat scenarios, including repeated opens/closes.
-The 50/80 MB figures are optimization targets. The earlier installed-app sample (~107 MB) is a reference, not a measurement of this build.
+## 用户验收
+
+界面操作和权限由使用者自行测试：中文输入、悬停和快捷键、多屏展宽、锁屏取消、图片粘贴、
+Markdown 保存、系统日历提醒事项及原有功能。真实 Hermes 连接、同步软件行为和常驻内存/CPU
+不以核心夹具或成功编译代替；在相同使用场景下测量后再比较。

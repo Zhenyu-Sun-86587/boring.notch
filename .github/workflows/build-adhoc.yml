@@ -4,7 +4,7 @@ on:
   push:
     branches: [feat/hermes-island, 'codex/hermes-*']
   pull_request:
-    paths: ['boringNotch/**', 'Packages/IslandCore/**', 'boringNotch.xcodeproj/**', '.github/workflows/build-adhoc.yml', '.github/scripts/sign_adhoc.py', '.github/scripts/create_adhoc_dmg.sh']
+    paths: ['boringNotch/**', 'Packages/IslandCore/**', 'boringNotch.xcodeproj/**', '.github/workflows/build-adhoc.yml', '.github/scripts/sign_adhoc.py', '.github/scripts/create_adhoc_dmg.sh', '.github/scripts/smoke_adhoc.py', '.github/scripts/check_chinese_localization.py', 'Shared/**', 'BoringNotchXPCHelper/**']
   workflow_dispatch:
 
 permissions:
@@ -27,6 +27,10 @@ jobs:
           sudo xcode-select -s /Applications/Xcode_27.1.app/Contents/Developer
           xcodebuild -version
           xcodebuild -showsdks
+      - name: Verify Chinese resources and packaging invariants
+        run: |
+          python3 .github/scripts/check_chinese_localization.py
+          python3 -m unittest discover -s .github/scripts/tests -q
       - name: Verify isolated core
         run: |
           swift run --package-path Packages/IslandCore -c release IslandCoreChecks
@@ -48,6 +52,8 @@ jobs:
         run: |
           cp THIRD_PARTY_LICENSES 'build/DerivedData/Build/Products/Release/Boring Notch.app/Contents/Resources/THIRD_PARTY_LICENSES'
           python3 .github/scripts/sign_adhoc.py 'build/DerivedData/Build/Products/Release/Boring Notch.app'
+      - name: Launch signed application and verify XPC without prompting for permissions
+        run: python3 .github/scripts/smoke_adhoc.py 'build/DerivedData/Build/Products/Release/Boring Notch.app'
       - name: Create and verify drag-to-Applications DMG
         run: bash .github/scripts/create_adhoc_dmg.sh 'build/DerivedData/Build/Products/Release/Boring Notch.app' 'build/Boring Notch.dmg'
       - name: Package executable app
@@ -63,7 +69,7 @@ jobs:
             echo '## Hermes ARM64 Ad-hoc build'
             echo "Commit: $(git rev-parse HEAD)"
             cat build/SHA256SUMS
-            echo 'Credentials and remote services are configured in the app under Hermes & Todo.'
+            echo 'Hermes is configured in Settings; calendar and reminders use macOS EventKit. Clipboard recording is opt-in.'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload application and verification evidence
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -76,13 +82,16 @@ jobs:
             build/SHA256SUMS
             build/COMMIT_SHA
             build/signing-report.txt
+            build/startup-report.txt
           retention-days: 14
       - name: Upload build diagnostics
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: Hermes-build-diagnostics-${{ github.sha }}
-          path: build/xcodebuild.log
+          path: |
+            build/xcodebuild.log
+            build/startup-report.txt
           if-no-files-found: ignore
           # Keep the resolved dependency graph with diagnostics for reproducibility.
       - name: Upload resolved package versions

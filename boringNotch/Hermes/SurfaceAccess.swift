@@ -1,76 +1,168 @@
 import AppKit
 import Combine
 import IslandCore
+import UniformTypeIdentifiers
+
+/// A file presenter follows coordinated edits/renames without requesting directory access.
+private final class NoteFilePresenter: NSObject, NSFilePresenter, @unchecked Sendable {
+    let presentedItemURL: URL?
+    let presentedItemOperationQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = 1
+        queue.name = "Hermes.NotePresenter"
+        return queue
+    }()
+    private let changed: @Sendable (URL?) -> Void
+    init(url: URL, changed: @escaping @Sendable (URL?) -> Void) {
+        presentedItemURL = url
+        self.changed = changed
+    }
+    func presentedItemDidChange() { changed(nil) }
+    func presentedItemDidMove(to newURL: URL) { changed(newURL) }
+    func accommodatePresentedItemDeletion(completionHandler: @escaping ((any Error)?) -> Void) {
+        changed(nil)
+        completionHandler(nil)
+    }
+}
 
 @MainActor
 final class SurfaceAccess: ObservableObject {
     static let shared = SurfaceAccess()
-    @Published private(set) var directoryPath: String
+    @Published private(set) var filePath: String
     @Published private(set) var revision = UUID()
-    private var watcher: DispatchSourceFileSystemObject?
-    private var watchedURL: URL?
+    @Published private(set) var errorMessage: String?
+    var hasFile: Bool { !filePath.isEmpty }
+    var fileName: String { URL(fileURLWithPath: filePath).lastPathComponent }
+    private var watchers: [DispatchSourceFileSystemObject] = []
+    private var presenter: NoteFilePresenter?
+    private var scopedURL: URL?
     private var users = 0
-    init() { directoryPath = UserDefaults.standard.string(forKey: "island.surfacePath") ?? IslandSettings.surfaceDefault }
+    init() { filePath = UserDefaults.standard.string(forKey: "island.surfaceFilePath") ?? "" }
 
-    func chooseDirectory() {
+    func chooseFile() {
         let panel = NSOpenPanel()
-        panel.canChooseDirectories = true; panel.canChooseFiles = false
+        panel.title = "选择 Markdown 文件"
+        panel.prompt = "选择"
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
-        panel.directoryURL = URL(fileURLWithPath: directoryPath)
+        panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
+        if hasFile { panel.directoryURL = URL(fileURLWithPath: filePath).deletingLastPathComponent() }
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            let bookmark = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
-            UserDefaults.standard.set(bookmark, forKey: "island.surfaceBookmark")
-            UserDefaults.standard.set(url.path, forKey: "island.surfacePath")
-            directoryPath = url.path
-            stopWatching()
-            if users > 0 { startWatching() }
-            revision = UUID()
-        } catch { NSAlert(error: error).runModal() }
+            try saveSelection(url)
+            errorMessage = nil
+            restartWatching()
+        } catch { errorMessage = error.localizedDescription }
     }
+
+    func clearSelection() {
+        stopWatching()
+        UserDefaults.standard.removeObject(forKey: "island.surfaceFileBookmark")
+        UserDefaults.standard.removeObject(forKey: "island.surfaceFilePath")
+        filePath = ""
+        errorMessage = nil
+        revision = UUID()
+    }
+
+    private func saveSelection(_ url: URL) throws {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let bookmark = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
+        UserDefaults.standard.set(bookmark, forKey: "island.surfaceFileBookmark")
+        UserDefaults.standard.set(url.path, forKey: "island.surfaceFilePath")
+        filePath = url.path
+        revision = UUID()
+    }
+
     private func resolve() throws -> URL {
-        guard let bookmark = UserDefaults.standard.data(forKey: "island.surfaceBookmark") else {
-            throw IslandError.configuration("请在 Hermes 设置中选择并授权便签目录。")
+        guard let bookmark = UserDefaults.standard.data(forKey: "island.surfaceFileBookmark") else {
+            throw IslandError.configuration("请先选择 Markdown 文件。")
         }
         var stale = false
         let url = try URL(resolvingBookmarkData: bookmark, options: .withSecurityScope, relativeTo: nil, bookmarkDataIsStale: &stale)
-        if stale {
-            guard url.startAccessingSecurityScopedResource() else { throw IslandError.configuration("便签目录授权已失效，请重新选择。") }
-            defer { url.stopAccessingSecurityScopedResource() }
-            UserDefaults.standard.set(try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil), forKey: "island.surfaceBookmark")
-        }
+        if stale || filePath != url.path { try saveSelection(url) }
         return url
     }
-    func context(for prompt: String) async throws -> String {
-        let files = SurfaceFiles.references(in: prompt)
-        guard !files.isEmpty else { return "" }
-        let directory = try resolve()
-        guard directory.startAccessingSecurityScopedResource() else { throw IslandError.configuration("无法访问便签目录，请重新授权。") }
-        defer { directory.stopAccessingSecurityScopedResource() }
+
+    /// Resolve and read again for every submission, even if a sync tool replaced the file.
+    func context() async throws -> String {
+        let file = try resolve()
+        guard file.startAccessingSecurityScopedResource() else { throw IslandError.configuration("无法访问便签，请重新选择文件。") }
+        defer { file.stopAccessingSecurityScopedResource() }
         return try await Task.detached(priority: .userInitiated) {
-            try files.map { name in "\n\n--- Local context: \(name) ---\n" + (try SurfaceFiles.read(directory.appendingPathComponent(name))) }.joined()
+            let contents = try SurfaceFiles.coordinatedRead(file)
+            return "\n\n--- 本地便签：\(file.lastPathComponent) ---\n" + contents
         }.value
     }
+
     func appendTask(_ text: String) async throws {
-        let directory = try resolve()
-        guard directory.startAccessingSecurityScopedResource() else { throw IslandError.configuration("无法访问便签目录，请重新授权。") }
-        defer { directory.stopAccessingSecurityScopedResource() }
+        let file = try resolve()
+        guard file.startAccessingSecurityScopedResource() else { throw IslandError.configuration("无法访问便签，请重新选择文件。") }
+        defer { file.stopAccessingSecurityScopedResource() }
         try await Task.detached(priority: .userInitiated) {
-            try SurfaceFiles.appendTask(text, to: directory.appendingPathComponent("Today.md"))
+            try SurfaceFiles.appendTask(text, to: file)
         }.value
         revision = UUID()
+        restartWatching()
     }
+
     func acquire() { users += 1; if users == 1 { startWatching() } }
     func release() { users = max(0, users - 1); if users == 0 { stopWatching() } }
-    private func startWatching() {
-        guard let directory = try? resolve(), directory.startAccessingSecurityScopedResource() else { return }
-        let descriptor = open(directory.path, O_EVTONLY)
-        guard descriptor >= 0 else { directory.stopAccessingSecurityScopedResource(); return }
-        watchedURL = directory
-        let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: descriptor, eventMask: [.write, .rename, .delete], queue: .main)
-        source.setEventHandler { [weak self] in Task { @MainActor in self?.revision = UUID() } }
-        source.setCancelHandler { close(descriptor); directory.stopAccessingSecurityScopedResource() }
-        watcher = source; source.resume()
+    private func restartWatching() {
+        stopWatching()
+        if users > 0 { startWatching() }
     }
-    private func stopWatching() { watcher?.cancel(); watcher = nil; watchedURL = nil }
+    private func startWatching() {
+        guard scopedURL == nil, let file = try? resolve(), file.startAccessingSecurityScopedResource() else { return }
+        scopedURL = file
+        let filePresenter = NoteFilePresenter(url: file) { [weak self] movedURL in
+            Task { @MainActor in
+                guard let self else { return }
+                if let movedURL {
+                    do { try self.saveSelection(movedURL); self.restartWatching() }
+                    catch { self.errorMessage = error.localizedDescription }
+                }
+                self.revision = UUID()
+            }
+        }
+        presenter = filePresenter
+        NSFileCoordinator.addFilePresenter(filePresenter)
+
+        // A parent-directory event survives sync tools' uncoordinated atomic replacement.
+        // File-only sandbox grants can deny that descriptor; the selected file still gets
+        // a vnode watcher and NSFilePresenter without broadening the user's authorization.
+        addWatcher(file.deletingLastPathComponent(), isParent: true)
+        addWatcher(file, isParent: false)
+    }
+    private func addWatcher(_ url: URL, isParent: Bool) {
+        let descriptor = open(url.path, O_EVTONLY)
+        guard descriptor >= 0 else { return }
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: descriptor,
+            eventMask: [.write, .rename, .delete, .attrib, .revoke], queue: .main)
+        source.setEventHandler { [weak self, weak source] in
+            let events = source?.data ?? []
+            Task { @MainActor in
+                guard let self else { return }
+                self.revision = UUID()
+                if !isParent,
+                   !events.intersection([.rename, .delete, .revoke]).isEmpty {
+                    // Reads always use a fresh URL; directory events rebind the new vnode.
+                    self.restartWatching()
+                }
+            }
+        }
+        source.setCancelHandler { close(descriptor) }
+        watchers.append(source)
+        source.resume()
+    }
+    private func stopWatching() {
+        for watcher in watchers { watcher.cancel() }
+        watchers = []
+        if let presenter { NSFileCoordinator.removeFilePresenter(presenter) }
+        presenter = nil
+        scopedURL?.stopAccessingSecurityScopedResource()
+        scopedURL = nil
+    }
 }

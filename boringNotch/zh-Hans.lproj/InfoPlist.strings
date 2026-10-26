@@ -1,0 +1,9 @@
+/* macOS permission prompts owned by Boring Notch. */
+"NSAppleEventsUsageDescription" = "允许控制音乐应用的播放。";
+"NSCameraUsageDescription" = "允许在镜子中显示实时相机画面。";
+"NSContactsUsageDescription" = "允许为通知匹配联系人的头像。";
+"NSCalendarsUsageDescription" = "允许在灵动岛中显示系统日历的日程。";
+"NSCalendarsFullAccessUsageDescription" = "允许在灵动岛中显示系统日历的日程。";
+"NSRemindersUsageDescription" = "允许在灵动岛中显示和完成系统提醒事项。";
+"NSRemindersFullAccessUsageDescription" = "允许在灵动岛中显示和完成系统提醒事项。";
+"NSAudioCaptureUsageDescription" = "允许分析正在播放的音频以绘制实时波形。音频仅在本机处理，不会录制、保存或分享。";

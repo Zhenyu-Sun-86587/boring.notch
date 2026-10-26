@@ -17,7 +17,9 @@ final class HermesStore: ObservableObject {
     @Published private(set) var turns: [Conversation.Turn] = []
     @Published private(set) var isGenerating = false
     @Published private(set) var isPreparingDrop = false
+    @Published private(set) var isSaving = false
     @Published private(set) var attachments: [StagedAttachment] = []
+    @Published var includesNote = false
     @Published var isWide = false
     @Published var capturesNotchDrops = false
     @Published var message: String?
@@ -56,7 +58,7 @@ final class HermesStore: ObservableObject {
     }
     func clear() {
         dropID = UUID()
-        stop(); conversation.clear(); turns = []; answer = ""; input = ""; isWide = false; message = nil
+        stop(); conversation.clear(); turns = []; answer = ""; input = ""; includesNote = false; isWide = false; message = nil
         for attachment in attachments { deleteTemporary(attachment) }
         attachments = []
     }
@@ -90,6 +92,7 @@ final class HermesStore: ObservableObject {
         let prompt = input
         guard prompt.utf8.count <= 65_536 else { message = "输入超过 64 KB。"; return }
         let staged = attachments
+        let includeNote = includesNote
         isGenerating = true; message = nil
         let id = UUID(); generationID = id
         generation = Task { [weak self] in
@@ -97,7 +100,7 @@ final class HermesStore: ObservableObject {
             var started = false
             do {
                 let configuration = try IslandSettings.hermes()
-                let context = try await SurfaceAccess.shared.context(for: prompt)
+                let context = includeNote ? try await SurfaceAccess.shared.context() : ""
                 let parts = try await Self.prepare(staged)
                 try Task.checkCancellation()
                 guard generationID == id else { return }
@@ -166,11 +169,16 @@ final class HermesStore: ObservableObject {
         }.value
     }
     func saveAnswer() {
-        guard !isGenerating, !answer.isEmpty else { return }
+        guard !isGenerating, !isSaving, !answer.isEmpty else { return }
         let text = answer
+        let name = SurfaceAccess.shared.fileName
+        isSaving = true
         Task {
-            do { try await SurfaceAccess.shared.appendTask(text); message = "已追加到 Today.md。" }
-            catch { message = error.localizedDescription }
+            defer { isSaving = false }
+            do {
+                try await SurfaceAccess.shared.appendTask(text)
+                message = "已保存到 \(name)"
+            } catch { message = error.localizedDescription }
         }
     }
 }

@@ -3,12 +3,6 @@ import ImageIO
 import UniformTypeIdentifiers
 
 public enum SurfaceFiles {
-    public static func references(in prompt: String) -> [String] {
-        ["today", "inbox"].filter {
-            prompt.range(of: "(?<![\\w@])@\($0)\\b", options: [.regularExpression, .caseInsensitive]) != nil
-        }.map { $0 == "today" ? "Today.md" : "Inbox.md" }
-    }
-
     public static func read(_ url: URL, limit: Int = 65_536) throws -> String {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
@@ -18,14 +12,26 @@ public enum SurfaceFiles {
         return text.trimmingCharacters(in: CharacterSet(charactersIn: "\u{feff}"))
     }
 
+    public static func coordinatedRead(_ url: URL, limit: Int = 65_536) throws -> String {
+        let coordinator = NSFileCoordinator()
+        var coordinationError: NSError?
+        var result: Result<String, any Error>?
+        coordinator.coordinate(readingItemAt: url, options: [], error: &coordinationError) { coordinatedURL in
+            result = Result { try read(coordinatedURL, limit: limit) }
+        }
+        if let coordinationError { throw coordinationError }
+        guard let result else { throw IslandError.changedFile }
+        return try result.get()
+    }
+
     /// Preserve the original byte prefix, BOM and line endings when appending one multi-line task.
     public static func appendingTask(_ text: String, to existing: Data) throws -> Data {
-        guard let original = String(data: existing, encoding: .utf8) else { throw IslandError.configuration("Today.md 必须是 UTF-8 文本。") }
+        guard let original = String(data: existing, encoding: .utf8) else { throw IslandError.configuration("便签必须是 UTF-8 文本。") }
         let lines = text.trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
             .components(separatedBy: "\n")
         guard let first = lines.first, !first.isEmpty else { throw IslandError.configuration("没有可保存的回答。") }
-        guard text.utf8.count <= 131_072 else { throw IslandError.limit("待办内容超过 128 KB。") }
+        guard text.utf8.count <= 131_072 else { throw IslandError.limit("保存内容超过 128 KB。") }
         let newline = original.contains("\r\n") ? "\r\n" : "\n"
         let task = (["- [ ] " + first] + lines.dropFirst().map { "  " + $0 }).joined(separator: newline) + newline
         var result = existing
@@ -41,7 +47,7 @@ public enum SurfaceFiles {
         coordinator.coordinate(writingItemAt: url, options: .forMerging, error: &coordinationError) { coordinatedURL in
             do {
                 guard (try coordinatedURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) <= 2_097_152 else {
-                    throw IslandError.limit("Today.md 超过 2 MB，请先归档旧内容。")
+                    throw IslandError.limit("便签超过 2 MB，请先归档旧内容。")
                 }
                 for attempt in 0..<3 {
                     let before = try Data(contentsOf: coordinatedURL, options: .mappedIfSafe)
