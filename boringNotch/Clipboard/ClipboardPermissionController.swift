@@ -94,7 +94,11 @@ final class ClipboardPermissionController: NSObject, NSWindowDelegate {
             return
         }
         ClipboardStore.shared.setPasteAccessNeeded(!access.canPaste)
-        if !access.canPaste { requestPastePermission(access, ifForeground: foreground) }
+        if access.canPaste {
+            showFeedback("自动粘贴权限已就绪。")
+        } else {
+            requestPastePermission(access, ifForeground: foreground)
+        }
     }
 
     func cancelRequests() {

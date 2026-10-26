@@ -34,6 +34,14 @@ final class ClipboardPresentation: ObservableObject {
     private var outsideClickMonitor: Any?
     private var localClickMonitor: Any?
 
+    /// Opt-in launch diagnostics. Never log clipboard bytes, AX values or window titles.
+    /// stderr also works when unified logging discards an accessory application's NSLog.
+    private func tracePaste(_ stage: String, _ detail: String = "") {
+        guard CommandLine.arguments.contains("--clipboard-diagnostics") else { return }
+        let line = "CLIPBOARD_TRACE \(ProcessInfo.processInfo.systemUptime) \(stage) \(detail)\n"
+        FileHandle.standardError.write(Data(line.utf8))
+    }
+
     func configure(windowManager: NotchWindowManager) {
         self.windowManager = windowManager
         guard observers.isEmpty else { return }
@@ -104,6 +112,7 @@ final class ClipboardPresentation: ObservableObject {
             let sessionID = note.userInfo?["sessionID"] as? String
             Task { @MainActor in
                 guard sessionID == ClipboardStore.shared.sessionID.uuidString else { return }
+                self?.tracePaste("copy-only")
                 self?.dismiss()
             }
         })
@@ -158,6 +167,7 @@ final class ClipboardPresentation: ObservableObject {
             self.keyboardTarget = snapshot
             self.keyboardTargetReady = true
             self.targetCaptureTask = nil
+            self.tracePaste("target", "pid=\(targetPID) snapshot=\(snapshot != nil) window=\(snapshot?.hasWindow == true) element=\(snapshot?.hasElement == true)")
             NSLog("[clipboard] target ready pid=%d snapshot=%d window=%d element=%d", targetPID, snapshot != nil,
                 snapshot?.hasWindow == true, snapshot?.hasElement == true)
         }
@@ -380,6 +390,7 @@ final class ClipboardPresentation: ObservableObject {
     }
 
     private func paste(sessionID: String?, changeCount: Int?) {
+        tracePaste("selection", "presented=\(sessionPresented) currentSession=\(sessionID == ClipboardStore.shared.sessionID.uuidString) pending=\(pasteActionID != nil) payloadReady=\(changeCount != nil)")
         guard sessionPresented, sessionID == ClipboardStore.shared.sessionID.uuidString,
               pasteActionID == nil, let sessionID, let changeCount else { return }
         // The pasteboard is already populated. A missing/expired helper snapshot only
@@ -396,17 +407,21 @@ final class ClipboardPresentation: ObservableObject {
         clearSession()
         closeDrawers()
         pasteTask = Task { @MainActor in
+            var stage = "handoff"
             defer {
+                self.tracePaste("finish", "request=\(actionID) stage=\(stage) cancelled=\(Task.isCancelled) current=\(self.pasteActionID == actionID)")
                 ClipboardStore.shared.finishPaste(sessionID: sessionID)
                 self.finishPasteAction(actionID)
             }
             guard !Task.isCancelled, self.pasteActionID == actionID,
                   self.windowManager?.isScreenLocked == false else { return }
             guard !invalidated else {
+                stage = "invalidated-target"
                 ClipboardPermissionController.shared.explainPasteFailure(.focusChanged)
                 return
             }
             guard let target, !target.isTerminated, target.processIdentifier != hostPID else {
+                stage = "unavailable-target"
                 ClipboardPermissionController.shared.explainPasteFailure(.targetUnavailable)
                 return
             }
@@ -415,16 +430,20 @@ final class ClipboardPresentation: ObservableObject {
             let currentPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
             guard (foregroundPID == pid || foregroundPID == hostPID),
                   (currentPID == pid || currentPID == hostPID) else {
+                stage = "foreground-changed"
                 ClipboardPermissionController.shared.explainPasteFailure(.focusChanged)
                 return
             }
             guard !Task.isCancelled, self.pasteActionID == actionID,
                   self.windowManager?.isScreenLocked == false else { return }
             NSApp.yieldActivation(to: target)
-            _ = target.activate(from: .current, options: [])
+            let activated = target.activate(from: .current, options: [])
+            self.tracePaste("activation", "request=\(actionID) target=\(pid) accepted=\(activated)")
             // Authorization is read-only here. Permission requests belong to explicit
             // settings actions and must never interrupt copied-content fallback.
+            stage = "permission"
             let access = await ClipboardPermissionController.shared.pasteAccessWithoutPrompt()
+            self.tracePaste("permission", "request=\(actionID) helper=\(access?.processIdentifier ?? -1) ax=\(access?.accessibility == true) post=\(access?.postEvents == true)")
             guard !Task.isCancelled, self.pasteActionID == actionID,
                   self.windowManager?.isScreenLocked == false else { return }
             guard let access else {
@@ -436,6 +455,7 @@ final class ClipboardPresentation: ObservableObject {
                 return
             }
             ClipboardStore.shared.setPasteAccessNeeded(false)
+            stage = "panel-release"
             for _ in 0..<30 {
                 guard !Task.isCancelled, self.pasteActionID == actionID,
                       self.windowManager?.isScreenLocked == false else { return }
@@ -446,15 +466,19 @@ final class ClipboardPresentation: ObservableObject {
                 ClipboardPermissionController.shared.explainPasteFailure(.focusUnavailable)
                 return
             }
+            stage = "helper"
             let result = await XPCHelperClient.shared.pasteClipboard(to: pid, changeCount: changeCount,
                 targetToken: targetToken, requestID: actionID)
+            stage = "result-\(result.rawValue)"
+            self.tracePaste("helper-result", "request=\(actionID) result=\(result.rawValue) target=\(pid)")
             guard self.pasteActionID == actionID, !Task.isCancelled else { return }
             NSLog("[clipboard] host request=%@ result=%@ target=%d", actionID.uuidString, result.rawValue, pid)
             ClipboardPermissionController.shared.explainPasteFailure(result)
         }
     }
 
-    private func cancelPendingPaste() {
+    private func cancelPendingPaste(cause: StaticString = #function) {
+        if let pasteActionID { tracePaste("cancel", "request=\(pasteActionID) cause=\(cause)") }
         pasteActionID = nil
         pasteTask?.cancel()
         pasteTask = nil
