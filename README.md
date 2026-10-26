@@ -1,3 +1,6 @@
+> **Hermes Island fork:** ARM64 macOS 27, native streaming chat, configurable Vikunja Todo, and local Markdown context.
+> Service configuration is intentionally left to you. See [setup and verification](docs/Hermes.md).
+
 <h1 align="center">
   <br>
   <a href="http://theboring.name"><img src="https://framerusercontent.com/images/RFK4vs0kn8pRMuOO58JeyoemXA.png?scale-down-to=256" alt="Boring Notch" width="150"></a>

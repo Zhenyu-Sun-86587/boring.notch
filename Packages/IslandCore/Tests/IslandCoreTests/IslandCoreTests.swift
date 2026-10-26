@@ -40,7 +40,7 @@ func taskAppendPreservesBOMCRLFAndPrefix() throws {
     try expect(SurfaceFiles.references(in: "use @TODAY and @inbox, email@example.com not@today") == ["Today.md", "Inbox.md"])
 }
 
-func coordinatedAppendOnlyTouchesFixture() throws {
+func coordinatedAppendOnlyTouchesFixture() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: directory) }
@@ -48,6 +48,14 @@ func coordinatedAppendOnlyTouchesFixture() throws {
     try Data("# Original\n".utf8).write(to: file)
     try SurfaceFiles.appendTask("Saved\nsecond line", to: file)
     try expect(try SurfaceFiles.read(file) == "# Original\n- [ ] Saved\n  second line\n")
+    try await withThrowingTaskGroup(of: Void.self) { group in
+        for index in 0..<6 {
+            group.addTask { try SurfaceFiles.appendTask("Concurrent \(index)", to: file) }
+        }
+        try await group.waitForAll()
+    }
+    let final = try SurfaceFiles.read(file)
+    for index in 0..<6 { try expect(final.contains("- [ ] Concurrent \(index)\n")) }
 }
 
 actor FixtureTransport: HTTPTransport {
@@ -152,7 +160,7 @@ func expectThrowsAsync<T>(_ body: () async throws -> T) async throws {
         try sseMultilineAndLimits()
         try conversationEvictsWholeTurns()
         try taskAppendPreservesBOMCRLFAndPrefix()
-        try coordinatedAppendOnlyTouchesFixture()
+        try await coordinatedAppendOnlyTouchesFixture()
         try await todoPaginationDedupAndExclusion()
         try await todoV2UsesConditionalPatch()
         try await todoV1PreservesUnknownFields()

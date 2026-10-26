@@ -45,7 +45,9 @@ jobs:
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM='' \
             2>&1 | tee build/xcodebuild.log
       - name: Sign and verify nested components
-        run: python3 .github/scripts/sign_adhoc.py 'build/DerivedData/Build/Products/Release/Boring Notch.app'
+        run: |
+          cp THIRD_PARTY_LICENSES 'build/DerivedData/Build/Products/Release/Boring Notch.app/Contents/Resources/THIRD_PARTY_LICENSES'
+          python3 .github/scripts/sign_adhoc.py 'build/DerivedData/Build/Products/Release/Boring Notch.app'
       - name: Package executable app
         shell: bash
         run: |
