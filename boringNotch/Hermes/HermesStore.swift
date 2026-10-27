@@ -4,9 +4,13 @@ import IslandCore
 import UniformTypeIdentifiers
 
 struct StagedAttachment: Identifiable {
-    let id = UUID()
+    let id: UUID
     let url: URL
     let temporary: Bool
+    let bookmark: Data?
+    init(id: UUID = UUID(), url: URL, temporary: Bool, bookmark: Data? = nil) {
+        self.id = id; self.url = url; self.temporary = temporary; self.bookmark = bookmark
+    }
 }
 
 @MainActor
@@ -20,7 +24,8 @@ final class HermesStore: ObservableObject {
     @Published private(set) var isPreparingDrop = false
     @Published private(set) var isSaving = false
     @Published private(set) var attachments: [StagedAttachment] = []
-    @Published var includesNote = false
+    @Published var includesNote = true
+    @Published private(set) var excludedShelfIDs: Set<UUID> = []
     @Published var isWide = false
     @Published var capturesNotchDrops = false
     @Published var message: String?
@@ -34,6 +39,7 @@ final class HermesStore: ObservableObject {
     }
     private var retryableSubmission: Submission?
     private let client: any HermesStreaming
+    private let shelfAttachments: @MainActor (Set<UUID>) throws -> [StagedAttachment]
     private let idleExpirationDelay: Duration
     private var lockObserver: AnyCancellable?
     private var generation: Task<Void, Never>?
@@ -44,8 +50,10 @@ final class HermesStore: ObservableObject {
     private var dropID = UUID()
     private var visible: Set<String> = []
     private var generationID = UUID()
-    init(client: any HermesStreaming = HermesClient(), idleExpirationDelay: Duration = .seconds(900)) {
+    init(client: any HermesStreaming = HermesClient(), idleExpirationDelay: Duration = .seconds(900),
+         shelfAttachments: @escaping @MainActor (Set<UUID>) throws -> [StagedAttachment] = { try ShelfStateViewModel.shared.hermesAttachments(excluding: $0) }) {
         self.client = client
+        self.shelfAttachments = shelfAttachments
         self.idleExpirationDelay = idleExpirationDelay
         // The store owns requests even when no drawer exists. Lock protection must have the
         // same lifetime; a view-scoped subscription disappears as soon as the notch closes.
@@ -89,11 +97,19 @@ final class HermesStore: ObservableObject {
     }
     func clear() {
         dropID = UUID()
-        stop(); transcript.clear(); turns = []; answer = ""; input = ""; includesNote = false; isWide = false; message = nil
+        stop(); transcript.clear(); turns = []; answer = ""; input = ""; includesNote = true; excludedShelfIDs = []; isWide = false; message = nil
         expiration?.cancel(); expiration = nil
         releaseSubmission()
         for attachment in attachments { deleteTemporary(attachment) }
         attachments = []
+    }
+    func excludeShelfItem(_ id: UUID) {
+        guard !isGenerating else { return }
+        excludedShelfIDs.insert(id)
+    }
+    func includeShelfItems() {
+        guard !isGenerating else { return }
+        excludedShelfIDs = []
     }
     func remove(_ attachment: StagedAttachment) {
         guard !isGenerating else { return }
@@ -103,7 +119,9 @@ final class HermesStore: ObservableObject {
         if item.temporary { try? FileManager.default.removeItem(at: item.url) }
     }
     func stage(_ providers: [NSItemProvider]) {
-        guard !isGenerating, !isPreparingDrop else { return }
+        guard !isGenerating else { message = "请等待当前回答完成后再添加附件。"; return }
+        guard !isPreparingDrop else { message = "正在添加附件，请稍候。"; return }
+        message = nil
         let remaining = max(0, 6 - attachments.count)
         guard remaining > 0 else { message = "最多暂存 6 个附件。"; return }
         isPreparingDrop = true
@@ -111,7 +129,8 @@ final class HermesStore: ObservableObject {
         Task {
             defer { isPreparingDrop = false }
             do {
-                let staged = try await ShelfDropService.stagingFiles(from: Array(providers.prefix(remaining)))
+                guard providers.count <= remaining else { throw IslandError.limit("最多暂存 6 个附件，请分批拖入或移除已有附件。") }
+                let staged = try await ShelfDropService.stagingFiles(from: providers)
                 guard id == dropID else {
                     for item in staged where item.temporary { try? FileManager.default.removeItem(at: item.url) }
                     return
@@ -124,12 +143,16 @@ final class HermesStore: ObservableObject {
         guard !isGenerating, !isPreparingDrop, !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         let prompt = input
         guard prompt.utf8.count <= 65_536 else { message = "输入超过 64 KB。"; return }
-        let staged = attachments
+        let staged: [StagedAttachment]
         let configuration: HermesConfiguration
         let note: NoteSelection?
         do {
             configuration = try IslandSettings.hermes()
-            note = includesNote ? try SurfaceAccess.shared.snapshot() : nil
+            note = includesNote && SurfaceAccess.shared.hasFile ? try SurfaceAccess.shared.snapshot() : nil
+            let shelf = try shelfAttachments(excludedShelfIDs)
+            var paths = Set(attachments.map { $0.url.standardizedFileURL.path })
+            staged = attachments + shelf.filter { paths.insert($0.url.standardizedFileURL.path).inserted }
+            guard staged.count <= 6 else { throw IslandError.limit("最多附加 6 个文件，请移除多余附件或暂存区引用。") }
         } catch { message = error.localizedDescription; return }
         start(prompt: prompt, staged: staged, note: note, configuration: configuration, draft: draftRevision)
     }
@@ -158,8 +181,9 @@ final class HermesStore: ObservableObject {
                 let parts = try await Self.prepare(staged)
                 try Task.checkCancellation()
                 guard generationID == id else { return }
-                let userText = prompt + context
-                let messages = transcript.messages + [ChatMessage(role: "user", parts: [.text(userText)] + parts)]
+                // Persist textual attachments with their exchange; encoded images remain request-scoped.
+                let userText = prompt + context + parts.compactMap(\.text).joined()
+                let messages = transcript.messages + [ChatMessage(role: "user", parts: [.text(userText)] + parts.filter { $0.imageURL != nil })]
                 // Validate the complete request while its original draft/attachments are intact.
                 _ = try HermesClient.makeRequest(configuration: configuration, messages: messages)
                 guard let accepted = try transcript.accept(request: id, prompt: prompt, user: userText, retrying: turnID) else {
@@ -230,12 +254,15 @@ final class HermesStore: ObservableObject {
         if Conversation.needsWideLayout(answer) { isWide = true }
     }
     private static func prepare(_ attachments: [StagedAttachment]) async throws -> [ChatPart] {
-        let urls = attachments.map(\.url)
         let preparation = Task.detached(priority: .userInitiated) {
             var parts: [ChatPart] = []
             var bytes = 0
-            for url in urls {
+            for attachment in attachments {
                 try Task.checkCancellation()
+                var stale = false
+                let url = try attachment.bookmark.map {
+                    try URL(resolvingBookmarkData: $0, options: [.withSecurityScope, .withoutUI], relativeTo: nil, bookmarkDataIsStale: &stale)
+                } ?? attachment.url
                 let scoped = url.startAccessingSecurityScopedResource()
                 defer { if scoped { url.stopAccessingSecurityScopedResource() } }
                 let type = try url.resourceValues(forKeys: [.contentTypeKey]).contentType
@@ -245,7 +272,7 @@ final class HermesStore: ObservableObject {
                     guard bytes <= 8 * 1_024 * 1_024 else { throw IslandError.limit("图片附件超过 8 MB，请减少图片。") }
                     parts.append(.image("data:image/jpeg;base64," + jpeg.base64EncodedString()))
                 } else {
-                    let text = try SurfaceFiles.read(url)
+                    let text = try SurfaceFiles.coordinatedRead(url)
                     bytes += text.utf8.count
                     parts.append(.text("\n\n--- Attachment: \(url.lastPathComponent) ---\n" + text))
                 }

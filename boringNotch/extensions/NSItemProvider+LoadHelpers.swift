@@ -111,12 +111,9 @@ extension NSItemProvider {
                 } else if let data = item as? Data {
                     // Some providers hand out a UTF-8 file URL string, others a bookmark. Prefer parsing string first.
                     if let string = String(data: data, encoding: .utf8) {
-                        if let url = URL(string: string) {
-                            resolvedURL = url
-                        } else if string.hasPrefix("/") {
-                            // Plain file system path
+                        if string.hasPrefix("/") {
                             resolvedURL = URL(fileURLWithPath: string)
-                        }
+                        } else if let url = URL(string: string) { resolvedURL = url }
                     }
                     if resolvedURL == nil {
                         // Fallback: try treating the data as a bookmark

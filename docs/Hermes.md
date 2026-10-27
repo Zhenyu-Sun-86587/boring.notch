@@ -28,7 +28,11 @@ Hermes 构建关闭上游 Sparkle，使用本分支 Actions 的 Ad-hoc DMG / ZIP
 在 **本地便签** 选择一个已有 `.md` 文件，文件名不限，无需选择文件夹。
 旧版目录授权不会猜测或自动绑定 `Today.md`。原文件和旧设置均保留。
 
-- 抽屉中的便签按钮决定本次发送是否引用该文件；附加状态显示文件名。
+- 绑定的便签默认随每次发送重新读取并附加，底栏显示文件名；点击 Chip 的叉号或便签按钮可取消引用，重新绑定或清空会话后恢复默认引用。
+- 暂存区中的文件和图片也默认作为当前请求上下文，Hermes 底栏用托盘图标显示；叉号仅取消 Hermes 引用，不删除暂存区原文件。可用“恢复暂存区引用”按钮恢复。
+- 直接拖入 Hermes 的附件仅用于该次发送；与暂存区同路径文件去重。两者合计最多 6 个文件，超限或任何读取失败都会保留草稿并提示。
+- 文本文件需为 UTF-8（每个最多 64 KB），文本附件与便签随该轮文字保留到最近 5 轮历史中；总历史仍有 256 KB 上限，超限会提前淘汰旧轮。图片经下采样发送，编码不保留在历史里；放在暂存区的原图在后续请求中会重新附加。
+- 暂存区链接不会自动抓取网页，PDF、Office、压缩包等二进制文件尚不支持作为文本附件。
 - 发送时重新读取文件；读取失败保留输入并显示错误。
 - **保存到便签** 将回答作为复选任务追加到同一文件，多行内容缩进。
 - 写入使用文件协调、版本复查与原子替换，保留 UTF-8 BOM、既有内容和换行风格。
@@ -74,6 +78,7 @@ Ad-hoc 更新可能要求重新授权；仅复制历史项目不依赖自动粘�
 swift run --package-path Packages/IslandCore IslandCoreChecks
 python3 .github/scripts/test_island_stream.py
 python3 .github/scripts/test_hermes_submission.py
+python3 .github/scripts/test_shelf_context.py
 python3 .github/scripts/test_clipboard_paste.py
 python3 .github/scripts/test_clipboard_alert.py
 python3 .github/scripts/test_clipboard_native_event.py
@@ -86,7 +91,8 @@ python3 -m unittest discover -s .github/scripts/tests -q
 核心夹具覆盖 SSE UTF-8 分片、取消、会话淘汰、任意文件名、BOM/CRLF、并发追加、同步原子替换、
 图片下采样，以及剪贴板原始图片/透明度、重启恢复、多条项目顺序、去重、并发写入、配额与过滤。
 中文审计覆盖应用拥有的源字符串与资源；保留品牌、URL、设备名称、用户内容、服务返回内容。
-提交夹具直接编译生产 HermesStore，以隔离的流与文件替身验证异步草稿生命周期、后台持续生成、隐藏时锁屏取消、闲置清理、5 轮上下文和图片释放。
+暂存区夹具直接编译生产 provider 解析、Bookmark 与 ShelfStateViewModel，验证文件 URL、中文空格路径、仅提供数据的图片、引用排除和错误呈现；不读取用户暂存区。
+提交夹具核对序列化 HTTP 请求中的默认便签与暂存区文件文本及追问历史，并直接编译生产 HermesStore，以隔离的流与文件替身验证异步草稿生命周期、后台持续生成、隐藏时锁屏取消、闲置清理、5 轮上下文和图片释放。
 生产会话路由由注入的记录器检查，不实际发送系统会话事件。原生粘贴夹具使用无窗口的沙盒测试应用、生产 helper 与隔离 PID 接收器；
 运行环境没有既有按键发送权限时记录 SKIP，不自动申请授权。收到隔离定向事件不代表生产会话路线或真实编辑器已接受粘贴，详见 [实现研究](clipboard-research.md)。
 动画夹具在所有屏幕之外采样真实布局与渲染像素，检查轮廓、阴影、输入栏位置和透明区域命中范围。

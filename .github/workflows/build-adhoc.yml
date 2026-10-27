@@ -41,6 +41,8 @@ jobs:
           set -euo pipefail
           mkdir -p build
           python3 .github/scripts/test_hermes_submission.py 2>&1 | tee build/hermes-submission-report.txt
+      - name: Verify Shelf providers and Hermes context ownership
+        run: python3 .github/scripts/test_shelf_context.py
       - name: Verify paste sequencing without accessing the clipboard
         shell: bash
         run: |
@@ -154,6 +156,7 @@ jobs:
             build/clipboard-alert-report.txt
             build/hermes-markdown-report.txt
             build/hermes-submission-report.txt
+            build/shelf-context-report.txt
             build/clipboard-native-checks/
             build/workspace-animation-frames/
           retention-days: 14
@@ -181,6 +184,7 @@ jobs:
             build/clipboard-alert-report.txt
             build/hermes-markdown-report.txt
             build/hermes-submission-report.txt
+            build/shelf-context-report.txt
             build/clipboard-native-checks/
             build/workspace-animation-frames/
           if-no-files-found: ignore

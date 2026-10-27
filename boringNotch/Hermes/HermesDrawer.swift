@@ -6,11 +6,16 @@ import IslandCore
 struct HermesDrawer: View {
     @EnvironmentObject private var vm: BoringViewModel
     @ObservedObject private var store = HermesStore.shared
+    @ObservedObject private var shelf = ShelfStateViewModel.shared
     @ObservedObject private var surface = SurfaceAccess.shared
     @FocusState private var inputFocused: Bool
     @State private var dropTarget = false
     @State private var showingWidthControls = false
     @State private var drawerVisible = false
+
+    private var shelfFiles: [ShelfItem] {
+        shelf.items.filter { if case .file = $0.kind { return !store.excludedShelfIDs.contains($0.id) }; return false }
+    }
 
     var body: some View {
         VStack(spacing: 8) {
@@ -45,14 +50,19 @@ struct HermesDrawer: View {
                     if let id { scroll.scrollTo(id, anchor: .bottom) }
                 }
             }
-            if !store.attachments.isEmpty || store.includesNote {
+            if !store.attachments.isEmpty || !shelfFiles.isEmpty || (store.includesNote && surface.hasFile) {
                 ScrollView(.horizontal) {
                     HStack(spacing: 6) {
-                        if store.includesNote {
+                        if store.includesNote && surface.hasFile {
                             attachmentChip(name: surface.fileName, icon: "doc.text", removeLabel: "取消引用便签") {
                                 store.includesNote = false
                             }
                             .help(surface.filePath)
+                        }
+                        ForEach(shelfFiles) { item in
+                            attachmentChip(name: item.displayName, icon: "tray", removeLabel: "取消引用暂存区文件") {
+                                store.excludeShelfItem(item.id)
+                            }
                         }
                         ForEach(store.attachments) { item in
                             attachmentChip(name: item.url.lastPathComponent, icon: "paperclip", removeLabel: "移除附件") {
@@ -62,6 +72,7 @@ struct HermesDrawer: View {
                     }
                 }.fixedSize(horizontal: false, vertical: true)
             }
+            if store.isPreparingDrop { ProgressView("正在添加附件…").controlSize(.small).font(.caption) }
             if let message = store.message {
                 Text(message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -96,15 +107,20 @@ struct HermesDrawer: View {
                     .disabled(store.answer.isEmpty || store.isGenerating || store.isSaving || !surface.hasFile)
                 Button("清空", systemImage: "trash") { store.clear() }
                 Spacer()
-                Button("引用便签", systemImage: store.includesNote ? "doc.text.fill" : "doc.text") {
-                    if !surface.hasFile {
+                Button("引用便签", systemImage: store.includesNote && surface.hasFile ? "doc.text.fill" : "doc.text") {
+                    let wasBound = surface.hasFile
+                    if !wasBound {
                         vm.isPopoverActive = true
                         surface.chooseFile()
                         vm.isPopoverActive = false
                     }
-                    if surface.hasFile { store.includesNote.toggle() }
+                    if surface.hasFile { store.includesNote = wasBound ? !store.includesNote : true }
                 }
                 .labelStyle(.iconOnly).help("引用便签").disabled(store.isGenerating)
+                if !store.excludedShelfIDs.isEmpty {
+                    Button("恢复暂存区引用", systemImage: "tray.and.arrow.down") { store.includeShelfItems() }
+                        .labelStyle(.iconOnly).help("恢复暂存区引用").disabled(store.isGenerating)
+                }
                 Button("设置", systemImage: "gearshape") { SettingsWindowController.shared.showIslandSettings() }
                     .labelStyle(.iconOnly).help("设置")
                 Menu {
@@ -125,7 +141,7 @@ struct HermesDrawer: View {
             if inputFocused != focused { inputFocused = focused }
         })
         .overlay { if dropTarget { RoundedRectangle(cornerRadius: 12).stroke(.tint, lineWidth: 2).allowsHitTesting(false) } }
-        .onDrop(of: [.fileURL, .image, .plainText], isTargeted: $dropTarget) { providers in
+        .onDrop(of: ShelfDropService.dropTypes, isTargeted: $dropTarget) { providers in
             vm.dropInteraction.dropEvent = true
             store.stage(providers)
             return true
@@ -134,7 +150,7 @@ struct HermesDrawer: View {
         .onChange(of: vm.inputSessionID) { _, _ in inputFocused = false }
         .onChange(of: dropTarget) { _, targeted in vm.dropInteraction.dropZoneTargeting = targeted }
         .onChange(of: showingWidthControls) { _, showing in vm.isPopoverActive = showing }
-        .onChange(of: surface.hasFile) { _, hasFile in if !hasFile { store.includesNote = false } }
+        .onChange(of: surface.filePath) { _, _ in store.includesNote = true }
         .onAppear {
             inputFocused = false
             drawerVisible = true

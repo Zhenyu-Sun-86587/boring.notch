@@ -42,12 +42,13 @@ final class DragDetector {
 
         let validTypes: [NSPasteboard.PasteboardType] = [
             .fileURL,
+            .png, .tiff,
             NSPasteboard.PasteboardType(UTType.url.identifier),
             .string
         ]
         return items.allSatisfy { item in
             // An item can advertise auxiliary formats alongside its supported content.
-            item.types.contains { validTypes.contains($0) }
+            item.types.contains { validTypes.contains($0) || UTType($0.rawValue)?.conforms(to: .image) == true }
         }
     }
 

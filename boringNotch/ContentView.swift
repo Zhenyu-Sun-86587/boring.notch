@@ -708,7 +708,12 @@ struct ContentView: View {
                 .opacity(gestureProgress != 0 ? 1.0 - min(abs(gestureProgress) * 0.1, 0.3) : 1.0)
             }
         }
-        .onDrop(of: [.fileURL, .url, .utf8PlainText, .plainText, .data], delegate: GeneralDropTargetDelegate(isTargeted: $dropInteraction.generalDropTargeting))
+        .onDrop(of: ShelfDropService.dropTypes, delegate: GeneralDropTargetDelegate(isTargeted: $dropInteraction.generalDropTargeting, acceptsDrop: Defaults[.boringShelf] || hermes.capturesNotchDrops || coordinator.currentView == .hermes) { providers in
+            dropInteraction.dropEvent = true
+            if coordinator.currentView == .hermes || hermes.capturesNotchDrops {
+                hermes.stage(providers)
+            } else { ShelfStateViewModel.shared.load(providers) }
+        })
     }
 
     private func nowPlayingFallbackNotice(_ notice: NowPlayingFallbackNotice) -> some View {
@@ -913,7 +918,7 @@ struct ContentView: View {
                 .frame(width: windowSize.width, height: windowSize.height)
                 .contentShape(Rectangle())
                 .background(IslandInteractionRegionMarker())
-        .onDrop(of: [.fileURL, .url, .utf8PlainText, .plainText, .data], isTargeted: $dropInteraction.dragDetectorTargeting) { providers in
+        .onDrop(of: ShelfDropService.dropTypes, isTargeted: $dropInteraction.dragDetectorTargeting) { providers in
             dropInteraction.dropEvent = true
             if hermes.capturesNotchDrops {
                 doOpen(tab: .hermes)
@@ -1193,6 +1198,8 @@ struct FullScreenDropDelegate: DropDelegate {
 
 struct GeneralDropTargetDelegate: DropDelegate {
     @Binding var isTargeted: Bool
+    let acceptsDrop: Bool
+    let receive: ([NSItemProvider]) -> Void
 
     func dropEntered(info: DropInfo) {
         isTargeted = true
@@ -1203,11 +1210,16 @@ struct GeneralDropTargetDelegate: DropDelegate {
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
-        return DropProposal(operation: .cancel)
+        return DropProposal(operation: acceptsDrop ? .copy : .cancel)
     }
 
     func performDrop(info: DropInfo) -> Bool {
-        return false
+        isTargeted = false
+        guard acceptsDrop else { return false }
+        let providers = info.itemProviders(for: ShelfDropService.dropTypes)
+        guard !providers.isEmpty else { return false }
+        receive(providers)
+        return true
     }
 }
 

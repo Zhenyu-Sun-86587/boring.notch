@@ -30,6 +30,7 @@ struct NoteSelection: Sendable { let name = "fixture.md" }
 @MainActor final class SurfaceAccess {
     static let shared = SurfaceAccess()
     var fail = false
+    var hasFile = false
     var suspended = false
     var waiting: CheckedContinuation<String, any Error>?
     func acquire() {}
@@ -42,6 +43,11 @@ struct NoteSelection: Sendable { let name = "fixture.md" }
     }
     func appendTask(_ text: String, selection: NoteSelection) async throws {}
 }
+@MainActor struct ShelfStateViewModel {
+    static let shared = Self()
+    func hermesAttachments(excluding: Set<UUID>) throws -> [StagedAttachment] { [] }
+}
+
 struct ShelfStagedFile { let url: URL; let temporary: Bool }
 @MainActor enum ShelfDropService {
     static var staged: [ShelfStagedFile] = []
@@ -95,6 +101,7 @@ private actor SubmissionClient: HermesStreaming {
         try await changedDraftDuringPreflight()
         try await backgroundGenerationSurvivesDrawerChanges()
         try await backgroundPreflightAndLock()
+        try await defaultContextAndShelfFiles()
         try await fiveRoundContextAndImages()
         print("PASS: production HermesStore draft preflight, immediate user turn, thinking, partial failure, retry, cancellation and stale callbacks")
         print("PASS: closed/tab-switched Hermes requests continue, reopen restores progress, idle expiry waits for completion, hidden lock cancels, five complete context pairs, images excluded from history")
@@ -103,12 +110,13 @@ private actor SubmissionClient: HermesStreaming {
     @MainActor private static func preflightPreservesDraft() async throws {
         let client = SubmissionClient()
         let store = HermesStore(client: client)
-        defer { store.clear(); IslandSettings.fail = false; SurfaceAccess.shared.fail = false; ShelfDropService.staged = [] }
+        defer { store.clear(); IslandSettings.fail = false; SurfaceAccess.shared.fail = false; SurfaceAccess.shared.hasFile = false; ShelfDropService.staged = [] }
         store.input = "配置错误时保留草稿"
         IslandSettings.fail = true
         store.send()
         try require(!store.isGenerating && store.input == "配置错误时保留草稿" && store.turns.isEmpty, "Configuration preflight consumed draft")
         IslandSettings.fail = false
+        SurfaceAccess.shared.hasFile = true
         store.includesNote = true
         SurfaceAccess.shared.fail = true
         store.send()
@@ -189,8 +197,9 @@ private actor SubmissionClient: HermesStreaming {
     @MainActor private static func changedDraftDuringPreflight() async throws {
         let client = SubmissionClient()
         let store = HermesStore(client: client)
-        defer { store.clear(); SurfaceAccess.shared.suspended = false }
+        defer { store.clear(); SurfaceAccess.shared.suspended = false; SurfaceAccess.shared.hasFile = false }
         SurfaceAccess.shared.suspended = true
+        SurfaceAccess.shared.hasFile = true
         store.includesNote = true
         store.input = "原问题"
         store.send()
@@ -258,9 +267,10 @@ private actor SubmissionClient: HermesStreaming {
     @MainActor private static func backgroundPreflightAndLock() async throws {
         let client = SubmissionClient()
         let store = HermesStore(client: client, idleExpirationDelay: .milliseconds(120))
-        defer { store.clear(); store.disappeared("primary"); SurfaceAccess.shared.suspended = false }
+        defer { store.clear(); store.disappeared("primary"); SurfaceAccess.shared.suspended = false; SurfaceAccess.shared.hasFile = false }
         SurfaceAccess.shared.suspended = true
         store.appeared("primary")
+        SurfaceAccess.shared.hasFile = true
         store.includesNote = true
         store.input = "预检期间收起"
         store.send()
@@ -283,6 +293,73 @@ private actor SubmissionClient: HermesStreaming {
                     "A hidden store failed to stop on lock or lost buffered output")
         store.appeared("primary")
         try require(store.canRetry(store.turns[0].id), "Lock cancellation lost the explicit retry action")
+    }
+
+    @MainActor private static func defaultContextAndShelfFiles() async throws {
+        let client = SubmissionClient()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("hermes-context-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("shelf-context.md")
+        try Data("UNIQUE-SHELF-CONTEXT".utf8).write(to: file)
+        let image = directory.appendingPathComponent("shelf-image.png")
+        let bitmap = CGContext(data: nil, width: 8, height: 8, bitsPerComponent: 8, bytesPerRow: 0,
+                               space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
+        let destination = CGImageDestinationCreateWithURL(image as CFURL, UTType.png.identifier as CFString, 1, nil)!
+        CGImageDestinationAddImage(destination, bitmap.makeImage()!, nil)
+        try require(CGImageDestinationFinalize(destination), "Could not write Shelf image fixture")
+        let source = StagedAttachment(url: file, temporary: false)
+        let picture = StagedAttachment(url: image, temporary: false)
+        var snapshots = 0
+        let store = HermesStore(client: client, shelfAttachments: { excluded in
+            snapshots += 1
+            return [source, picture].filter { !excluded.contains($0.id) }
+        })
+        SurfaceAccess.shared.hasFile = true
+        defer { store.clear(); SurfaceAccess.shared.hasFile = false; try? FileManager.default.removeItem(at: directory) }
+        try require(store.includesNote, "Bound note is not included by default")
+        store.input = "依据便签和暂存区回答"
+        store.send()
+        try await eventually { await client.count == 1 }
+        let first = await client.requests[0]
+        let body = try HermesClient.makeRequest(configuration: IslandSettings.hermes(), messages: first).httpBody!
+        let decoded = try JSONSerialization.jsonObject(with: body) as! [String: Any]
+        let content = (decoded["messages"] as! [[String: Any]])[0]["content"] as! [[String: Any]]
+        let text = content[0]["text"] as! String
+        let imageURL = (content[1]["image_url"] as! [String: Any])["url"] as! String
+        try require(content.count == 2 && imageURL.hasPrefix("data:image/jpeg;base64,"), "Serialized request lost Shelf image bytes")
+        try require(text.contains("便签上下文") && text.contains("UNIQUE-SHELF-CONTEXT"), "Serialized HTTP request lost default note or shelf text")
+        try await client.emit("第一答")
+        await client.finish()
+        try await eventually { !store.isGenerating }
+        try require(FileManager.default.fileExists(atPath: file.path), "Sending context deleted Shelf-owned source")
+        store.includesNote = false
+        store.excludeShelfItem(source.id)
+        store.excludeShelfItem(picture.id)
+        store.input = "追问"
+        store.send()
+        try await eventually { await client.count == 2 }
+        let followup = await client.requests[1]
+        try require(followup[0].parts[0].text == text, "Text attachment was dropped from completed conversation history")
+        try require(followup.last?.parts[0].text == "追问", "Excluded note/shelf was attached again to current question")
+        try await client.emit("第二答")
+        await client.finish()
+        try await eventually { !store.isGenerating }
+        store.includeShelfItems()
+        try Data("UPDATED-SHELF-CONTEXT".utf8).write(to: file, options: .atomic)
+        store.input = "再读取"
+        store.send()
+        try await eventually { await client.count == 3 }
+        try require(await client.requests[2].last?.parts[0].text?.contains("UPDATED-SHELF-CONTEXT") == true, "Shelf was not reread at submission")
+        try await client.emit("第三答")
+        await client.finish()
+        try await eventually { !store.isGenerating }
+        try FileManager.default.removeItem(at: file)
+        store.input = "文件失效保留草稿"
+        store.send()
+        try await eventually { !store.isGenerating }
+        try require(await client.count == 3 && store.input == "文件失效保留草稿" && store.message != nil && snapshots == 4,
+                    "Missing Shelf source was silently omitted or consumed the draft")
+        print("PASS: serialized bound Markdown + Shelf text/image context; followup preserves attachment text; exclusions, fresh reads and failed preflight preserve source/draft")
     }
 
     @MainActor private static func fiveRoundContextAndImages() async throws {

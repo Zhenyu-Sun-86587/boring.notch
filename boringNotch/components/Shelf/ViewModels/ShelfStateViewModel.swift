@@ -6,6 +6,7 @@
 
 import Foundation
 import AppKit
+import IslandCore
 
 @MainActor
 final class ShelfStateViewModel: ObservableObject {
@@ -15,6 +16,7 @@ final class ShelfStateViewModel: ObservableObject {
         didSet { schedulePersistence() }
     }
 
+    @Published var dropError: String?
     @Published var isLoading: Bool = false
 
     var isEmpty: Bool { items.isEmpty }
@@ -63,15 +65,25 @@ final class ShelfStateViewModel: ObservableObject {
         }
     }
 
+    /// Keep Shelf ownership: sending context never consumes or deletes a shelf file.
+    func hermesAttachments(excluding ids: Set<UUID>) throws -> [StagedAttachment] {
+        try items.compactMap { item in
+            guard !ids.contains(item.id), case .file(let bookmark) = item.kind else { return nil }
+            guard let url = resolveAndUpdateBookmark(for: item) else {
+                throw IslandError.configuration("无法读取暂存区文件，请移除失效项目或重新拖入。")
+            }
+            return StagedAttachment(id: item.id, url: url, temporary: false, bookmark: bookmark)
+        }
+    }
+
     func load(_ providers: [NSItemProvider]) {
         guard !providers.isEmpty else { return }
         isLoading = true
+        dropError = nil
         Task { [weak self] in
-            let dropped = await ShelfDropService.items(from: providers)
-            await MainActor.run {
-                self?.add(dropped)
-                self?.isLoading = false
-            }
+            defer { self?.isLoading = false }
+            do { self?.add(try await ShelfDropService.items(from: providers)) }
+            catch { self?.dropError = "无法添加拖入的文件：" + error.localizedDescription }
         }
     }
 

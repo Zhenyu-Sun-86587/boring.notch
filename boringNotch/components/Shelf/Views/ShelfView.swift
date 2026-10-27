@@ -28,9 +28,17 @@ struct ShelfView: View {
                 FileShareView(dropInteraction: dropInteraction)
                     .aspectRatio(1, contentMode: .fit)
                 panel(quickLookService: quickLookService)
-                    .onDrop(of: [.fileURL, .url, .utf8PlainText, .plainText, .data], isTargeted: $interaction.dragDetectorTargeting) { providers in
+                    .onDrop(of: ShelfDropService.dropTypes, isTargeted: $interaction.dragDetectorTargeting) { providers in
                         handleDrop(providers: providers)
                     }
+            }
+            .overlay(alignment: .bottom) {
+                Group {
+                    if shelfState.isLoading { ProgressView().controlSize(.small).padding(8) }
+                    else if let error = shelfState.dropError {
+                        Text(error).font(.caption).foregroundStyle(.red).padding(8)
+                    }
+                }.allowsHitTesting(false)
             }
         }
     }
@@ -95,7 +103,7 @@ struct ShelfView: View {
                 }
                 .padding(-spacing)
                 .scrollIndicators(.never)
-                .onDrop(of: [.fileURL, .url, .utf8PlainText, .plainText, .data], isTargeted: $interaction.dragDetectorTargeting) { providers in
+                .onDrop(of: ShelfDropService.dropTypes, isTargeted: $interaction.dragDetectorTargeting) { providers in
                     handleDrop(providers: providers)
                 }
             }
