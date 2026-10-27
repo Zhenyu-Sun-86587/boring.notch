@@ -306,8 +306,7 @@ struct ContentView: View {
                     ) { canvasSize in
                         IslandWindowBridge(size: canvasSize,
                             wantsKeyboard: workspaceIsOpen,
-                            permitsKeyboardWithoutHover: coordinator.currentView == .hermes
-                                || (clipboard.keyboardSessionActive && clipboardPresentation.keyboardScreenUUID == vm.screenUUID),
+                            permitsKeyboardWithoutHover: clipboard.keyboardSessionActive && clipboardPresentation.keyboardScreenUUID == vm.screenUUID,
                             keyboardActivation: coordinator.currentView == .clipboard ? clipboard.sessionID.uuidString : "hermes-\(vm.inputSessionID)",
                             keyboardReady: clipboardPresentation.keyboardTargetReady)
                     })
