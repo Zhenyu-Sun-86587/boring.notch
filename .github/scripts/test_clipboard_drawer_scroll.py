@@ -28,7 +28,8 @@ with tempfile.TemporaryDirectory(prefix="boring-drawer-scroll-") as temporary:
     executable = work / "ClipboardDrawerScrollChecks"
     subprocess.run(compiler + ["-parse-as-library", "-I", temporary, "-L", temporary,
         "-lIslandCore", "-Xlinker", "-rpath", "-Xlinker", temporary,
-        str(drawer), str(root / "boringNotch/Hermes/HermesInputFocusObserver.swift"),
+        str(drawer), str(root / "Shared/InteractionDiagnostics.swift"), str(root / "Shared/InteractionDiagnosticContext.swift"),
+        str(root / "boringNotch/Hermes/HermesInputFocusObserver.swift"),
         str(root / ".github/scripts/ClipboardDrawerScrollChecks.swift"),
         "-o", str(executable)], check=True, timeout=120)
     subprocess.run([str(executable)], check=True, timeout=35)

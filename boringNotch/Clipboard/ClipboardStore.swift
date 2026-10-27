@@ -142,6 +142,7 @@ final class ClipboardStore: ObservableObject {
         if enabled { restartMonitor() }
     }
     func beginSession() {
+        InteractionDiagnostics.record("clipboard.store", "session-begin", ["session": sessionID.uuidString])
         cancelCopyTask()
         pasting = false
         sessionGeneration = UUID()
@@ -151,6 +152,7 @@ final class ClipboardStore: ObservableObject {
         applyLimits()
     }
     func endSession() {
+        InteractionDiagnostics.record("clipboard.store", "session-end", ["session": sessionID.uuidString])
         pasting = false
         sessionGeneration = UUID()
         cancelCopyTask()
@@ -342,6 +344,7 @@ final class ClipboardStore: ObservableObject {
         }
     }
     func moveSelection(_ offset: Int) {
+        InteractionDiagnostics.record("clipboard.store", "move", ["direction": String(offset), "index": String(filteredRecords.firstIndex { $0.id == selectedID } ?? -1), "count": String(filteredRecords.count), "selected": String(selectedRecord != nil)])
         let next = ClipboardSelectionPolicy.movedID(selectedID, in: filteredRecords.map(\.id), offset: offset)
         guard next != selectedID else { return }
         keyboardSelectionDirection = offset < 0 ? -1 : 1
@@ -349,10 +352,12 @@ final class ClipboardStore: ObservableObject {
         keyboardSelectionRevision &+= 1
     }
     func copySelected(paste: Bool) {
+        InteractionDiagnostics.record("clipboard.store", "activate-selected", ["selected": String(selectedRecord != nil), "busy": String(busy), "pasting": String(pasting), "post": String(paste), "session": sessionID.uuidString])
         guard let record = selectedRecord, !busy, !pasting else { return }
         copy(record, paste: paste)
     }
     func copy(_ record: ClipboardHistoryRecord, paste: Bool) {
+        InteractionDiagnostics.record("clipboard.store", "copy-request", ["busy": String(busy), "pasting": String(pasting), "locked": String(locked), "post": String(paste), "session": sessionID.uuidString])
         guard !busy, !pasting, !locked else { return }
         select(record.id)
         busy = true
@@ -365,7 +370,9 @@ final class ClipboardStore: ObservableObject {
                 if copyActionID == actionID { busy = false; copyTask = nil; copyActionID = nil }
             }
             do {
+                InteractionDiagnostics.record("clipboard.store", "payload-loading", ["request": actionID.uuidString])
                 let payload = try await loadPayload(record.id)
+                InteractionDiagnostics.record("clipboard.store", "payload-loaded", ["request": actionID.uuidString, "items": String(payload.items.count), "bytes": String(payload.byteCount), "current": String(sessionGeneration == generation), "pending": String(!Task.isCancelled)])
                 guard !Task.isCancelled, !locked, sessionGeneration == generation else { return }
                 let objects = try payload.items.map { item -> NSPasteboardItem in
                     let object = NSPasteboardItem()
@@ -399,6 +406,7 @@ final class ClipboardStore: ObservableObject {
                 }
                 guard writePasteboard(objects) else { throw ClipboardHistoryError.missing }
                 changeCount = pasteboard.changeCount
+                InteractionDiagnostics.record("clipboard.store", "pasteboard-written", ["request": actionID.uuidString, "session": generation.uuidString, "changeCount": String(changeCount)])
                 message = nil
                 // Copy always completes before focus, helper or permission checks. The
                 // presenter owns the latched destination and an optional AX enhancement.
@@ -418,6 +426,7 @@ final class ClipboardStore: ObservableObject {
         }
     }
     private func reportCopyFailure(_ value: String, generation: UUID) {
+        InteractionDiagnostics.record("clipboard.store", "copy-failed", ["session": generation.uuidString])
         message = value
         notifications.post(name: .clipboardCopyFailed, object: nil,
                            userInfo: ["sessionID": generation.uuidString, "message": value])

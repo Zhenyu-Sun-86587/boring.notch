@@ -56,6 +56,11 @@ jobs:
           python3 .github/scripts/test_clipboard_store.py 2>&1 | tee build/clipboard-store-report.txt
           python3 .github/scripts/typecheck_clipboard_presentation.py 2>&1 | tee build/clipboard-presentation-report.txt
           python3 .github/scripts/test_clipboard_session_runtime.py 2>&1 | tee build/clipboard-session-runtime-report.txt
+      - name: Verify opt-in interaction diagnostics and bounded private logs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/test_interaction_diagnostics.py 2>&1 | tee build/interaction-diagnostics-report.txt
       - name: Verify actual clipboard drawer follows keyboard selection
         shell: bash
         run: |
@@ -144,6 +149,7 @@ jobs:
             build/clipboard-presentation-report.txt
             build/clipboard-session-runtime-report.txt
             build/clipboard-drawer-scroll-report.txt
+            build/interaction-diagnostics-report.txt
             build/clipboard-gui-session-report.txt
             build/clipboard-alert-report.txt
             build/hermes-markdown-report.txt
@@ -170,6 +176,7 @@ jobs:
             build/clipboard-presentation-report.txt
             build/clipboard-session-runtime-report.txt
             build/clipboard-drawer-scroll-report.txt
+            build/interaction-diagnostics-report.txt
             build/clipboard-gui-session-report.txt
             build/clipboard-alert-report.txt
             build/hermes-markdown-report.txt

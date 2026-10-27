@@ -18,7 +18,7 @@ def main():
     root = Path(__file__).resolve().parents[2]
     report = root / "build/workspace-animation-report.txt"
     report.parent.mkdir(exist_ok=True)
-    sources = [root / "boringNotch/Hermes/NotchHostingView.swift", root / "boringNotch/Hermes/IslandWindowBridge.swift",
+    sources = [root / "Shared/InteractionDiagnostics.swift", root / "Shared/InteractionDiagnosticContext.swift", root / "boringNotch/Hermes/NotchHostingView.swift", root / "boringNotch/Hermes/IslandWindowBridge.swift",
                root / "boringNotch/Hermes/IslandKeyboardHandoff.swift", root / "boringNotch/Hermes/WorkspaceSurfaceFrame.swift",
                root / ".github/scripts/WorkspaceAnimationChecks.swift"]
     with tempfile.TemporaryDirectory(prefix="boring-workspace-animation-") as temporary:

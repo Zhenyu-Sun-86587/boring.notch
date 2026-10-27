@@ -13,7 +13,7 @@ private final class FixtureService: NSObject, ClipboardNativeFixtureProtocol {
     func validateGuards(with reply: @escaping (Bool) -> Void) {
         production.captureClipboardTarget(-1) { data in
             self.production.pasteClipboard(toProcessIdentifier: -1, hostProcessIdentifier: self.clientPID,
-                pasteboardChangeCount: -1, targetToken: nil, requestID: UUID().uuidString) { result in
+                pasteboardChangeCount: -1, targetToken: nil, requestID: UUID().uuidString, diagnostics: false) { result, rows in
                     guard data == nil && result == ClipboardPasteResult.targetUnavailable.rawValue else { reply(false); return }
                     // Invalid PID guards stop before any AX input-tree or clipboard access.
                     reply(true)

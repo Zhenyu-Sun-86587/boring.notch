@@ -202,6 +202,39 @@ class BoringNotchSkyLightWindow: NSPanel {
         super.orderFrontRegardless()
     }
 
+    override func makeKey() {
+        InteractionDiagnostics.record("window", "make-key-before", InteractionDiagnostics.windowFields(self))
+        super.makeKey()
+        InteractionDiagnostics.record("window", "make-key-after", InteractionDiagnostics.windowFields(self))
+    }
+
+    override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
+        let accepted = super.makeFirstResponder(responder)
+        if InteractionDiagnostics.enabled {
+            var fields = InteractionDiagnostics.windowFields(self)
+            fields["requestedResponder"] = responder.map { NSStringFromClass(type(of: $0)) } ?? "nil"
+            fields["result"] = String(accepted)
+            InteractionDiagnostics.record("window", "first-responder", fields)
+        }
+        return accepted
+    }
+
+    override func sendEvent(_ event: NSEvent) {
+        if InteractionDiagnostics.enabled,
+           event.type == .leftMouseDown || event.type == .leftMouseUp
+            || ((event.type == .keyDown || event.type == .keyUp) && [36, 76, 125, 126, 53].contains(event.keyCode)) {
+            var fields = InteractionDiagnostics.windowFields(self)
+            fields["event"] = String(event.type.rawValue)
+            if event.type == .leftMouseDown || event.type == .leftMouseUp {
+                fields["eventNumber"] = String(event.eventNumber)
+                fields["x"] = String(describing: event.locationInWindow.x); fields["y"] = String(describing: event.locationInWindow.y)
+            }
+            if event.type == .keyDown || event.type == .keyUp { fields["key"] = String(event.keyCode) }
+            InteractionDiagnostics.record("window", "input-delivered", fields)
+        }
+        super.sendEvent(event)
+    }
+
     override var canBecomeKey: Bool {
         isVisible && !isIslandKeyboardHandoffActive && !islandKeyboardHandoffState.isClosed
             && (wantsKeyForTextInput || allowsIslandKeyboard) && !isIslandScreenLocked

@@ -207,6 +207,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        _ = InteractionDebugStore.shared
         // CI validates the packaged binary and XPC transport without opening windows,
         // reading the system clipboard, requesting permissions or contacting user services.
         if CommandLine.arguments.contains("--island-smoke-test") {
@@ -224,6 +225,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     "helperAvailable": helperOK,
                     "clipboardPasteTransport": pasteTransport == .targetUnavailable,
                     "clipboardPostEventAuthorized": pasteAccess.map { $0.postEvents as Any } ?? NSNull(),
+                    "interactionDebugEnabled": InteractionDiagnostics.enabled,
                     "clipboardGUISessionAvailable": (pasteAccess?.guiSessionAvailable).map { $0 as Any } ?? NSNull(),
                     "clipboardHelperPID": pasteAccess.map { $0.processIdentifier as Any } ?? NSNull(),
                     "calendarUsage": Bundle.main.object(forInfoDictionaryKey: "NSCalendarsFullAccessUsageDescription") as? String ?? "",

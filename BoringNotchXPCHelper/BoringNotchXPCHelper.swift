@@ -91,16 +91,27 @@ class BoringNotchXPCHelper: NSObject, BoringNotchXPCHelperProtocol {
     /// The host first orders its panel out. Verify the actual keyboard owner,
     /// physical key/button release and unchanged pasteboard before posting once.
     @objc func pasteClipboard(toProcessIdentifier targetPID: Int32, hostProcessIdentifier hostPID: Int32,
-                              pasteboardChangeCount: Int, targetToken: String?, requestID: String, with reply: @escaping (String) -> Void) {
+                              pasteboardChangeCount: Int, targetToken: String?, requestID: String, diagnostics: Bool, with reply: @escaping (String, [String]) -> Void) {
         // A noninteractive transport probe uses an invalid PID. It must not read
         // the pasteboard, inspect focus, prompt for access or post any event.
-        guard targetPID > 0 else { reply(ClipboardPasteResult.targetUnavailable.rawValue); return }
+        guard targetPID > 0 else { reply(ClipboardPasteResult.targetUnavailable.rawValue, []); return }
         DispatchQueue.main.async {
             Task { @MainActor in
                 let access = ClipboardPasteAccess(accessibility: AXIsProcessTrusted(), postEvents: CGPreflightPostEventAccess(),
                     processIdentifier: ProcessInfo.processInfo.processIdentifier, bundleIdentifier: Bundle.main.bundleIdentifier ?? "")
-                guard access.accessibility else { reply(ClipboardPasteResult.unauthorized.rawValue); return }
-                guard access.postEvents else { reply(ClipboardPasteResult.postEventUnauthorized.rawValue); return }
+                var diagnosticRows: [String] = []
+                var previousDiagnostic: String?
+                let diagnosticStart = ProcessInfo.processInfo.systemUptime
+                func trace(_ value: @autoclosure () -> String) {
+                    guard diagnostics, diagnosticRows.count < 96 else { return }
+                    let detail = value()
+                    guard detail != previousDiagnostic else { return }
+                    previousDiagnostic = detail
+                    diagnosticRows.append("ms=\(Int((ProcessInfo.processInfo.systemUptime - diagnosticStart) * 1000)) " + detail)
+                }
+                trace("begin target=\(targetPID) host=\(hostPID) helper=\(ProcessInfo.processInfo.processIdentifier) ax=\(access.accessibility) post=\(access.postEvents)")
+                guard access.accessibility else { reply(ClipboardPasteResult.unauthorized.rawValue, diagnosticRows); return }
+                guard access.postEvents else { reply(ClipboardPasteResult.postEventUnauthorized.rawValue, diagnosticRows); return }
                 // Tokens are optional AX enhancements. XPC restarts discard their in-memory
                 // records; native app activation remains a usable clipboard destination.
                 let original = Self.clipboardTargets.record(targetToken, pid: targetPID)
@@ -140,6 +151,7 @@ class BoringNotchXPCHelper: NSObject, BoringNotchXPCHelperProtocol {
                         && ![CGKeyCode(36), 76, 9].contains { CGEventSource.keyState(.hidSystemState, key: $0) }
                         && !CGEventSource.buttonState(.hidSystemState, button: .left)
                     let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+                    trace("observe foreground=\(foreground.map { String($0) } ?? "nil") focused=\(focusedPID.map { String($0) } ?? "nil") match=\(assessment.match) inputReady=\(assessment.inputReady) restore=\(restoreAttempts) session=\(session != nil) locked=\(session?["CGSSessionScreenIsLocked"] as? Bool == true) released=\(released) clipboardUnchanged=\(NSPasteboard.general.changeCount == pasteboardChangeCount)")
                     return ClipboardPasteObservation(authorized: access.accessibility, postEventAuthorized: access.postEvents,
                         // A missing GUI session is not evidence of a locked display.
                         // Both states block input, but only a real lock is silently cancelled.
@@ -166,11 +178,14 @@ class BoringNotchXPCHelper: NSObject, BoringNotchXPCHelperProtocol {
                               current.clipboardUnchanged, current.inputReleased, current.foregroundPID == targetPID,
                               current.originalTargetUnchanged, current.originalInputReady,
                               current.focusedPID == targetPID || !current.focusProbeAvailable else { return .failed }
-                        return ClipboardPasteEvent.post(to: targetPID) ? .posted : .failed
+                        let posted = ClipboardPasteEvent.post(to: targetPID)
+                        trace("post singleSessionPair=\(posted)")
+                        return posted ? .posted : .failed
                     }))
                 NSLog("[clipboard] helper request=%@ result=%@ target=%d ax=%d post=%d window=%d element=%d restoreAttempts=%d", requestID, result.rawValue,
                     targetPID, access.accessibility, access.postEvents, original?.descriptor.hasWindow == true, original?.descriptor.hasElement == true, restoreAttempts)
-                reply(result.rawValue)
+                trace("finish result=\(result.rawValue) taskCancelled=\(Task.isCancelled)")
+                reply(result.rawValue, diagnosticRows)
             }
         }
     }

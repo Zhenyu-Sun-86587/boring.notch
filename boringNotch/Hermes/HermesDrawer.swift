@@ -69,6 +69,7 @@ struct HermesDrawer: View {
             HStack(alignment: .bottom, spacing: 10) {
                 TextField("输入消息…", text: $store.input, axis: .vertical)
                     .lineLimit(1...4).textFieldStyle(.plain).focused($inputFocused)
+                    .background(InteractionInputProbe(region: "hermes.prompt"))
                     .onSubmit { store.send() }
                     .onKeyPress(.return, phases: .down) { key in
                         let composing = (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() ?? false
@@ -129,6 +130,7 @@ struct HermesDrawer: View {
             store.stage(providers)
             return true
         }
+        .onChange(of: inputFocused) { _, value in InteractionDiagnostics.record("hermes.input", "focus-state", ["allowed": String(value), "activation": vm.inputSessionID.uuidString]) }
         .onChange(of: vm.inputSessionID) { _, _ in inputFocused = false }
         .onChange(of: dropTarget) { _, targeted in vm.dropInteraction.dropZoneTargeting = targeted }
         .onChange(of: showingWidthControls) { _, showing in vm.isPopoverActive = showing }

@@ -25,6 +25,7 @@ struct HermesInputFocusObserver: NSViewRepresentable {
 
         func receive(enabled: Bool, activation: UUID?, isCurrent: @escaping () -> Bool, setFocused: @escaping (Bool) -> Void) {
             let changed = self.enabled != enabled || self.activation != activation
+            if changed { InteractionDiagnostics.record("focus.input", "configuration", ["enabled": String(enabled), "activation": activation?.uuidString ?? "nil", "current": String(isCurrent())]) }
             self.activation = activation
             self.enabled = enabled
             self.isCurrent = isCurrent
@@ -56,6 +57,7 @@ struct HermesInputFocusObserver: NSViewRepresentable {
                            (window as? BoringNotchSkyLightWindow)?.isIslandScreenLocked != true {
                             self.locked = false
                         }
+                        InteractionDiagnostics.record("focus.input", note.name.rawValue, InteractionDiagnostics.windowFields(window))
                         self.schedule()
                     }
                 })
@@ -91,7 +93,22 @@ struct HermesInputFocusObserver: NSViewRepresentable {
                 guard let self, let window, self.window === window,
                       self.generation.value == ticket else { return }
                 self.pending = nil
-                self.setFocused?(self.generation.permits(ticket, eligibility: self.eligibility(for: window)))
+                let eligibility = self.eligibility(for: window)
+                let permitted = self.generation.permits(ticket, eligibility: eligibility)
+                if InteractionDiagnostics.enabled {
+                    var fields = InteractionDiagnostics.windowFields(window)
+                    fields.merge(["enabled": String(eligibility.drawerOpen), "current": String(eligibility.hermesSelected), "locked": String(eligibility.windowLocked), "handoff": String(eligibility.keyboardHandoff), "blocking": String(eligibility.blockingUI), "allowed": String(permitted), "ticket": String(ticket)]) { _, new in new }
+                    let reason = !eligibility.drawerOpen ? "drawer-closed" : !eligibility.hermesSelected ? "inactive-tab" : !eligibility.windowKey ? "window-not-key" : !eligibility.windowVisible ? "input-hidden" : eligibility.windowLocked ? "locked" : eligibility.keyboardHandoff ? "handoff" : eligibility.blockingUI ? "blocking-ui" : "allowed"
+                    fields["reason"] = reason
+                    InteractionDiagnostics.record("focus.input", "decision", fields)
+                }
+                self.setFocused?(permitted)
+                if InteractionDiagnostics.enabled {
+                    DispatchQueue.main.async { [weak self, weak window] in
+                        guard let self, let window, self.generation.value == ticket else { return }
+                        InteractionDiagnostics.record("focus.input", "responder-after", InteractionDiagnostics.windowFields(window))
+                    }
+                }
             }
             pending = work
             // Do not mutate SwiftUI focus while its representable is reconciling.
@@ -99,6 +116,7 @@ struct HermesInputFocusObserver: NSViewRepresentable {
         }
 
         private func cancelPending() {
+            if pending != nil { InteractionDiagnostics.record("focus.input", "work-cancelled", ["generation": String(generation.value)]) }
             generation.invalidate()
             pending?.cancel()
             pending = nil
@@ -120,4 +138,49 @@ struct HermesInputFocusObserver: NSViewRepresentable {
         view.receive(enabled: enabled, activation: activation, isCurrent: isCurrent, setFocused: setFocused)
     }
     static func dismantleNSView(_ view: Anchor, coordinator: ()) { view.invalidate() }
+}
+
+/// Passive field-local click probe; never participates in hit testing or focus.
+struct InteractionInputProbe: NSViewRepresentable {
+    let region: String
+    final class Probe: NSView {
+        var region = ""
+        private var monitor: Any?
+        private var toggleObserver: NSObjectProtocol?
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let toggleObserver { NotificationCenter.default.removeObserver(toggleObserver) }
+            toggleObserver = nil
+            if window != nil {
+                toggleObserver = NotificationCenter.default.addObserver(forName: Notification.Name("InteractionDiagnosticsChanged"), object: nil, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.updateMonitor() }
+                }
+            }
+            updateMonitor()
+        }
+        private func updateMonitor() {
+            if let monitor { NSEvent.removeMonitor(monitor) }; monitor = nil
+            guard window != nil, InteractionDiagnostics.enabled else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) { [weak self] event in
+                MainActor.assumeIsolated {
+                    guard let self, let window = self.window, event.window === window,
+                          !self.isHiddenOrHasHiddenAncestor,
+                          self.bounds.contains(self.convert(event.locationInWindow, from: nil)) else { return }
+                    var fields = InteractionDiagnostics.windowFields(window)
+                    fields["region"] = self.region; fields["event"] = String(event.type.rawValue)
+                    fields["eventNumber"] = String(event.eventNumber)
+                    InteractionDiagnostics.record("focus.field", "pointer-received", fields)
+                }
+                return event
+            }
+        }
+        func invalidate() {
+            if let monitor { NSEvent.removeMonitor(monitor) }; monitor = nil
+            if let toggleObserver { NotificationCenter.default.removeObserver(toggleObserver) }; toggleObserver = nil
+        }
+    }
+    func makeNSView(context: Context) -> Probe { let view = Probe(); view.region = region; return view }
+    func updateNSView(_ view: Probe, context: Context) { view.region = region }
+    static func dismantleNSView(_ view: Probe, coordinator: ()) { view.invalidate() }
 }

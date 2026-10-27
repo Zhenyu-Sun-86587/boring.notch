@@ -19,6 +19,7 @@ struct ClipboardDrawer: View {
                 TextField("搜索剪贴板", text: $store.search)
                     .textFieldStyle(.plain)
                     .focused($searchFocused)
+                    .background(InteractionInputProbe(region: "clipboard.search"))
                     .onKeyPress(.downArrow, phases: [.down, .repeat]) { handle(.down, press: $0) }
                     .onKeyPress(.upArrow, phases: [.down, .repeat]) { handle(.up, press: $0) }
                     .onKeyPress(.return, phases: .down) { handle(.enter, press: $0) }
@@ -146,6 +147,7 @@ struct ClipboardDrawer: View {
         .onAppear {
             store.start()
         }
+        .onChange(of: searchFocused) { _, value in InteractionDiagnostics.record("clipboard.input", "focus-state", ["allowed": String(value), "session": store.sessionID.uuidString]) }
         .onChange(of: store.sessionID) { _, _ in searchFocused = false }
         .onChange(of: store.keyboardSessionActive) { _, value in
             if !value { focusTask?.cancel(); searchFocused = false }
@@ -159,6 +161,7 @@ struct ClipboardDrawer: View {
 
     private var isComposing: Bool { (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() ?? false }
     private func handle(_ key: ClipboardSelectionPolicy.Key, press: KeyPress) -> KeyPress.Result {
+        InteractionDiagnostics.record("clipboard.input", "key-handler", ["key": String(describing: key), "command": String(press.modifiers.contains(.command)), "composing": String(isComposing), "repeating": String(press.phase == .repeat), "selected": String(store.selectedRecord != nil)])
         switch ClipboardSelectionPolicy.action(for: key, repeating: press.phase == .repeat,
                                                 command: press.modifiers.contains(.command), composing: isComposing) {
         case .move(let direction): store.moveSelection(direction)
@@ -257,6 +260,12 @@ private struct ClipboardPointerObserver: NSViewRepresentable {
                 return false
             }
             let id = hitRowID(event, in: window, at: point)
+            if InteractionDiagnostics.enabled, event.type == .leftMouseDown || event.type == .leftMouseUp {
+                var fields = InteractionDiagnostics.windowFields(window)
+                fields.merge(["event": String(event.type.rawValue), "eventNumber": String(event.eventNumber),
+                    "rowHit": String(id != nil), "count": String(rowFrames.count), "clickCount": String(event.clickCount), "width": String(describing: bounds.width), "height": String(describing: bounds.height), "x": String(describing: point.x), "y": String(describing: point.y)]) { _, new in new }
+                InteractionDiagnostics.record("clipboard.input", "row-pointer", fields)
+            }
             if event.type == .leftMouseDown {
                 let result = pointerActivation.mouseDown(rowID: id, at: point, clickCount: event.clickCount)
                 if result.consumesEvent, let id { select?(id) }
@@ -264,6 +273,7 @@ private struct ClipboardPointerObserver: NSViewRepresentable {
             }
             if event.type == .leftMouseUp {
                 let result = pointerActivation.mouseUp(rowID: id, at: point)
+                InteractionDiagnostics.record("clipboard.input", "row-release", ["consumed": String(result.consumesEvent), "selected": String(result.activatedID != nil)])
                 if let activated = result.activatedID { activate?(activated) }
                 // Activation closes the panel. Do not let AppKit handle this click afterwards
                 // and make the closing panel key again instead of the paste destination.

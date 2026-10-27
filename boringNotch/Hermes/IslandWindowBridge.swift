@@ -38,6 +38,7 @@ struct IslandWindowBridge: NSViewRepresentable {
     private static let keyboardRequest = Notification.Name("IslandKeyboardFocusRequested")
 
     @MainActor static func requestKeyboardFocus(in window: NSWindow) {
+        InteractionDiagnostics.record("focus.bridge", "explicit-request", InteractionDiagnostics.windowFields(window))
         NotificationCenter.default.post(name: keyboardRequest, object: window)
     }
 
@@ -61,6 +62,7 @@ struct IslandWindowBridge: NSViewRepresentable {
         private var generation: UInt = 0
         private var pending: DispatchWorkItem?
         private weak var previousWindow: NSWindow?
+        private var lastDiagnosticSignature: String?
         private var attemptedKeyboardActivation = false
         private var explicitKeyboardEntry = false
         private var explicitKeyboardDeadline: TimeInterval = 0
@@ -76,6 +78,15 @@ struct IslandWindowBridge: NSViewRepresentable {
                 || request?.keyboardActivation != keyboardActivation {
                 attemptedKeyboardActivation = false
             }
+            if InteractionDiagnostics.enabled {
+                let signature = "\(size)|\(wantsKeyboard)|\(keyboardReady)|\(keyboardActivation ?? "nil")"
+                if signature != lastDiagnosticSignature {
+                    lastDiagnosticSignature = signature
+                    var fields = InteractionDiagnostics.windowFields(window)
+                    fields.merge(["activation": keyboardActivation ?? "nil", "wantsKeyboard": String(wantsKeyboard), "ready": String(keyboardReady), "width": String(describing: size.width), "height": String(describing: size.height), "owner": ownerID.uuidString]) { _, new in new }
+                    InteractionDiagnostics.record("focus.bridge", "request", fields)
+                }
+            }
             request = Request(size: size, wantsKeyboard: wantsKeyboard,
                               permitsKeyboardWithoutHover: permitsKeyboardWithoutHover,
                               keyboardActivation: keyboardActivation, keyboardReady: keyboardReady)
@@ -84,6 +95,7 @@ struct IslandWindowBridge: NSViewRepresentable {
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
+            InteractionDiagnostics.record("focus.bridge", "anchor-window", InteractionDiagnostics.windowFields(window))
             if let previousWindow, previousWindow !== window { releaseKeyboard(in: previousWindow) }
             if let keyboardObserver { NotificationCenter.default.removeObserver(keyboardObserver) }
             if let competingKeyboardObserver { NotificationCenter.default.removeObserver(competingKeyboardObserver) }
@@ -109,6 +121,7 @@ struct IslandWindowBridge: NSViewRepresentable {
                               let winner = notification.object as? NSWindow, winner !== window else { return }
                         // A delayed target snapshot is not permission to steal focus from Settings.
                         // Only a new explicit entry/input click may re-arm this session afterward.
+                        InteractionDiagnostics.record("focus.bridge", "competing-window", InteractionDiagnostics.windowFields(winner))
                         self.attemptedKeyboardActivation = true
                         self.explicitKeyboardEntry = false
                         self.explicitKeyboardDeadline = 0
@@ -138,7 +151,10 @@ struct IslandWindowBridge: NSViewRepresentable {
         private func apply(_ request: Request, to window: NSWindow) {
             guard let screen = window.screen,
                   request.size.width.isFinite, request.size.height.isFinite,
-                  request.size.width > 0, request.size.height > 0 else { return }
+                  request.size.width > 0, request.size.height > 0 else {
+                InteractionDiagnostics.record("focus.bridge", "invalid-screen-or-size", InteractionDiagnostics.windowFields(window))
+                return
+            }
             let scale = max(1, screen.backingScaleFactor)
             func pixelAligned(_ value: CGFloat) -> CGFloat { (value * scale).rounded() / scale }
             let frame = NSRect(x: pixelAligned(screen.frame.midX - request.size.width / 2),
@@ -155,9 +171,15 @@ struct IslandWindowBridge: NSViewRepresentable {
                 window.setFrame(frame, display: false)
             }
             guard let panel = window as? BoringNotchSkyLightWindow,
-                  !panel.isIslandKeyboardHandoffActive else { return }
+                  !panel.isIslandKeyboardHandoffActive else {
+                InteractionDiagnostics.record("focus.bridge", "blocked-handoff", InteractionDiagnostics.windowFields(window))
+                return
+            }
             if request.wantsKeyboard && !panel.isIslandScreenLocked && panel.isVisible {
-                guard request.keyboardReady else { return }
+                guard request.keyboardReady else {
+                    InteractionDiagnostics.record("focus.bridge", "waiting-target", InteractionDiagnostics.windowFields(window))
+                    return
+                }
                 // Admission happens once per explicit opening/tab/session. A
                 // streamed answer or layout update must not steal key status
                 // back from Settings, a permission alert or another app.
@@ -168,7 +190,11 @@ struct IslandWindowBridge: NSViewRepresentable {
                     explicitKeyboardEntry = false
                     panel.islandKeyboardOwner = ownerID
                     panel.allowsIslandKeyboard = true
+                    InteractionDiagnostics.record("focus.bridge", "make-key-before", InteractionDiagnostics.windowFields(panel))
                     if !panel.isKeyWindow { panel.makeKey() }
+                    InteractionDiagnostics.record("focus.bridge", "make-key-after", InteractionDiagnostics.windowFields(panel))
+                } else if !panel.isKeyWindow {
+                    InteractionDiagnostics.record("focus.bridge", "admission-skipped", ["attempted": String(attemptedKeyboardActivation), "explicit": String(explicitKeyboardEntry), "allowed": String(request.permitsKeyboardWithoutHover), "current": String(frame.contains(NSEvent.mouseLocation))])
                 }
             } else if panel.islandKeyboardOwner == ownerID || panel.islandKeyboardOwner == nil {
                 let previouslyOwnedFocus = panel.allowsIslandKeyboard

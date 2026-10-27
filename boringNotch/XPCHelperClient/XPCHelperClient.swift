@@ -274,17 +274,23 @@ final class XPCHelperClient: NSObject, ObservableObject {
                 let result: String = try await service.withContinuation { service, continuation in
                     service.pasteClipboard(toProcessIdentifier: targetPID,
                         hostProcessIdentifier: ProcessInfo.processInfo.processIdentifier,
-                        pasteboardChangeCount: changeCount, targetToken: targetToken, requestID: requestID.uuidString) { result in
+                        pasteboardChangeCount: changeCount, targetToken: targetToken, requestID: requestID.uuidString,
+                        diagnostics: InteractionDiagnostics.enabled) { result, rows in
+                        for row in rows {
+                            InteractionDiagnostics.record("clipboard.helper", "request-trace", ["request": requestID.uuidString, "detail": row])
+                        }
                         continuation.resume(returning: result)
                     }
                 }
                 return ClipboardPasteResult(rawValue: result) ?? .eventFailure
             } catch {
+                InteractionDiagnostics.record("clipboard.xpc", "transport-failed", ["request": requestID.uuidString, "errorDomain": (error as NSError).domain, "errorCode": String((error as NSError).code)])
                 lastError = .transport(underlying: error)
                 helperAvailable = false
                 return .eventFailure
             }
         } onCancel: {
+            InteractionDiagnostics.record("clipboard.xpc", "cancel", ["request": requestID.uuidString])
             Task { @MainActor in await self.cancelClipboardPaste(requestID) }
         }
     }

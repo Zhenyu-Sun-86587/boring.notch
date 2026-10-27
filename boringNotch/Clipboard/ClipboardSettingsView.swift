@@ -44,6 +44,7 @@ struct ClipboardSettingsView: View {
             Section {
                 Button("清空历史", role: .destructive) { confirmsClear = true }
             }
+            InteractionDebugSettings()
             if let message = store.message { Text(message).foregroundStyle(.secondary).font(.caption) }
         }
         .formStyle(.grouped)

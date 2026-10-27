@@ -33,35 +33,11 @@ final class ClipboardPresentation: ObservableObject {
     private var pointerScreens = Set<String>()
     private var outsideClickMonitor: Any?
     private var localClickMonitor: Any?
-    private static let diagnosticQueue = DispatchQueue(label: "BoringNotch.clipboard.diagnostics")
-
-    /// Opt-in metadata only: no clipboard bytes, AX values or window titles. A bounded
-    /// cache log also works when LaunchServices cannot redirect a sandboxed app's stderr.
-    private func tracePaste(_ stage: String, _ detail: String = "") {
-        guard CommandLine.arguments.contains("--clipboard-diagnostics") else { return }
-        let line = "CLIPBOARD_TRACE \(ProcessInfo.processInfo.systemUptime) \(stage) \(detail)\n"
-        FileHandle.standardError.write(Data(line.utf8))
-        guard Bundle.main.bundleIdentifier == "theboringteam.boringnotch",
-              let cache = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return }
-        Self.diagnosticQueue.async {
-            do {
-                let directory = cache.appendingPathComponent("ClipboardDiagnostics", isDirectory: true)
-                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-                let url = directory.appendingPathComponent("paste-stages.log")
-                if !FileManager.default.fileExists(atPath: url.path) {
-                    FileManager.default.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600])
-                }
-                let file = try FileHandle(forWritingTo: url)
-                defer { try? file.close() }
-                if try file.seekToEnd() > 131_072 {
-                    try file.truncate(atOffset: 0)
-                    try file.seek(toOffset: 0)
-                }
-                try file.write(contentsOf: Data(line.utf8))
-            } catch {
-                // Opt-in logging must never change a clipboard action's outcome.
-            }
-        }
+    private func tracePaste(_ stage: String, _ detail: @autoclosure () -> String = "") {
+        InteractionDiagnostics.record("clipboard.presentation", stage,
+            ["detail": detail(), "session": ClipboardStore.shared.sessionID.uuidString,
+             "request": pasteActionID?.uuidString ?? "nil", "presented": String(sessionPresented), "pending": String(pasteActionID != nil),
+             "target": keyboardTargetApplication.map { String($0.processIdentifier) } ?? "nil"])
     }
 
     func configure(windowManager: NotchWindowManager) {
@@ -149,6 +125,7 @@ final class ClipboardPresentation: ObservableObject {
     /// Called before either workspace acquires keyboard focus. Hermes -> Clipboard shares this
     /// snapshot, so the main app is never mistaken for the external editor after switching tabs.
     func prepareKeyboardTarget() {
+        tracePaste("target-prepare", "ready=\(keyboardTargetReady) capturePending=\(targetCaptureTask != nil) invalidated=\(targetInvalidatedByOwnEditor)")
         guard windowManager?.isScreenLocked != true, targetCaptureTask == nil else { return }
         let foreground = NSWorkspace.shared.frontmostApplication
         if keyboardTargetReady, keyboardTargetApplication != nil { return }
@@ -166,6 +143,7 @@ final class ClipboardPresentation: ObservableObject {
             destinationTracker.forget(pid)
         }
         guard let application = keyboardTargetApplication, !application.isTerminated else {
+            tracePaste("target-unavailable", "ownEditor=\(ownEditorIsKey) remembered=\(allowsRememberedDestination)")
             keyboardTargetReady = true
             return
         }
@@ -188,6 +166,7 @@ final class ClipboardPresentation: ObservableObject {
         }
         let timeout = DispatchWorkItem { [weak self] in
             guard let self, self.targetGeneration == generation, !self.keyboardTargetReady else { return }
+            self.tracePaste("target-timeout", "target=\(targetPID)")
             self.targetCaptureTask?.cancel(); self.targetCaptureTask = nil
             self.targetCaptureTimeout = nil
             self.keyboardTargetReady = true
@@ -198,6 +177,7 @@ final class ClipboardPresentation: ObservableObject {
     }
 
     func updateKeyboardTargetVisibility(owner: UUID, visible: Bool) {
+        tracePaste("keyboard-visibility", "owner=\(owner) visible=\(visible) owners=\(keyboardOwners.count)")
         if visible {
             targetRelease?.cancel(); targetRelease = nil
             keyboardOwners.insert(owner)
@@ -216,6 +196,7 @@ final class ClipboardPresentation: ObservableObject {
     }
 
     private func endKeyboardTarget() {
+        tracePaste("target-end")
         targetRelease?.cancel(); targetRelease = nil
         targetGeneration = UUID()
         targetCaptureTask?.cancel(); targetCaptureTask = nil
@@ -283,6 +264,7 @@ final class ClipboardPresentation: ObservableObject {
 
     /// The generic notch shortcut can restore Clipboard on its already-selected display.
     func beginKeyboardSession(on viewModel: BoringViewModel) {
+        tracePaste("keyboard-entry")
         guard windowManager?.isScreenLocked == false, !BoringViewCoordinator.shared.firstLaunch else { return }
         prepareNewSessionTarget()
         sessionPresented = true
@@ -315,6 +297,7 @@ final class ClipboardPresentation: ObservableObject {
 
     /// Called with the view's current state, not a queued transition's old value.
     func updateVisibility(owner: UUID, screenUUID: String?, visible: Bool) {
+        tracePaste("drawer-visibility", "owner=\(owner) visible=\(visible) tab=\(BoringViewCoordinator.shared.currentView) owners=\(visibility.visibleOwners.count) mouseOwner=\(visibility.mouseOwner?.uuidString ?? "nil")")
         let isVisible = visible && windowManager?.isScreenLocked == false
             && BoringViewCoordinator.shared.currentView == .clipboard
         let ownedMouse = visibility.mouseOwner == owner
@@ -350,6 +333,7 @@ final class ClipboardPresentation: ObservableObject {
     }
 
     private func captureMouseTarget(owner: UUID) {
+        tracePaste("pointer-entry", "owner=\(owner) keyboard=\(ClipboardStore.shared.keyboardSessionActive) mouseOwner=\(visibility.mouseOwner?.uuidString ?? "nil")")
         guard pasteActionID == nil, !ClipboardStore.shared.keyboardSessionActive,
               let screen = visibility.visibleOwners[owner],
               NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })?.displayUUID == screen,
@@ -360,6 +344,7 @@ final class ClipboardPresentation: ObservableObject {
     }
 
     func endKeepingWindow() {
+        tracePaste("end-keeping-window")
         // SwiftUI delivers close/tab observations after dismiss-for-paste. They must
         // not cancel the new delayed paste task installed by that same action.
         guard sessionPresented else { return }
@@ -372,6 +357,7 @@ final class ClipboardPresentation: ObservableObject {
     }
 
     private func clearSession() {
+        tracePaste("session-clear")
         guard sessionPresented else { return }
         sessionPresented = false
         visibility.reset()
@@ -420,7 +406,10 @@ final class ClipboardPresentation: ObservableObject {
     private func paste(sessionID: String?, changeCount: Int?) {
         tracePaste("selection", "presented=\(sessionPresented) currentSession=\(sessionID == ClipboardStore.shared.sessionID.uuidString) pending=\(pasteActionID != nil) payloadReady=\(changeCount != nil)")
         guard sessionPresented, sessionID == ClipboardStore.shared.sessionID.uuidString,
-              pasteActionID == nil, let sessionID, let changeCount else { return }
+              pasteActionID == nil, let sessionID, let changeCount else {
+            tracePaste("selection-rejected", "presented=\(sessionPresented) currentSession=\(sessionID == ClipboardStore.shared.sessionID.uuidString) pending=\(pasteActionID != nil)")
+            return
+        }
         // The pasteboard is already populated. A missing/expired helper snapshot only
         // removes AX restoration; the original application is still a valid destination.
         let target = keyboardTargetApplication

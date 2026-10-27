@@ -14,6 +14,7 @@ with tempfile.TemporaryDirectory(prefix="boring-clipboard-typecheck-") as tempor
         subprocess.run(compiler + ["-emit-module", "-module-name", name, *map(str, sources)],
             cwd=work, check=True, timeout=120)
     subprocess.run(compiler + ["-typecheck", "-I", str(work),
+        str(root / "Shared/InteractionDiagnostics.swift"), str(root / "Shared/InteractionDiagnosticContext.swift"),
         str(root / "boringNotch/Clipboard/ClipboardStore.swift"),
         str(root / "boringNotch/Hermes/ClipboardPresentation.swift"),
         str(root / "boringNotch/Clipboard/ClipboardPermissionController.swift"),

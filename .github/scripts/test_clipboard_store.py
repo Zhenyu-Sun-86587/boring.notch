@@ -17,6 +17,7 @@ with tempfile.TemporaryDirectory(prefix="boring-clipboard-store-") as temporary:
     executable = work / "ClipboardStoreChecks"
     subprocess.run(compiler + ["-parse-as-library", "-I", str(work), "-L", str(work), "-lIslandCore",
         "-Xlinker", "-rpath", "-Xlinker", str(work),
+        str(root / "Shared/InteractionDiagnostics.swift"), str(root / "Shared/InteractionDiagnosticContext.swift"),
         str(root / "boringNotch/Clipboard/ClipboardStore.swift"),
         str(root / ".github/scripts/ClipboardStoreFixtureDependencies.swift"),
         str(root / ".github/scripts/ClipboardStoreChecks.swift"), "-o", str(executable)],

@@ -15,7 +15,7 @@ def main() -> None:
     if platform.system() != "Darwin" or platform.machine() != "arm64":
         raise SystemExit("Window layout checks require ARM64 macOS with the macOS 27 SDK")
     root = Path(__file__).resolve().parents[2]
-    sources = [
+    sources = [root / "Shared/InteractionDiagnostics.swift", root / "Shared/InteractionDiagnosticContext.swift",
         root / "boringNotch/Hermes/NotchHostingView.swift",
         root / "boringNotch/Hermes/IslandWindowBridge.swift",
         root / "boringNotch/Hermes/IslandKeyboardHandoff.swift",

@@ -38,7 +38,7 @@ with tempfile.TemporaryDirectory(prefix="clipboard-presentation-runtime-") as te
         source = source.replace(native, fixture)
     presentation = work / "ClipboardPresentation.swift"
     presentation.write_text(source)
-    sources = [presentation,
+    sources = [root / "Shared/InteractionDiagnostics.swift", root / "Shared/InteractionDiagnosticContext.swift", presentation,
         root / "Shared/ClipboardDestinationTracker.swift",
         root / "Shared/ClipboardPasteAccess.swift",
         root / "Shared/ClipboardPasteCoordinator.swift",

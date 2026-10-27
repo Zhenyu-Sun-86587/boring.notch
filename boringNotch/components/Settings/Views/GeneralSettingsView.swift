@@ -68,6 +68,7 @@ struct GeneralSettings: View {
             } header: {
                 Text("Displays")
             }
+            InteractionDebugSettings()
         }
         .toolbar {
             Button("Quit app") {
