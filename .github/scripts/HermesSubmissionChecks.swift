@@ -427,6 +427,15 @@ private actor SubmissionClient: HermesStreaming {
         defer { for item in images { try? FileManager.default.removeItem(at: item.url) } }
         try require(images.count == 1 && images[0].displayName == "剪贴板图片" && !(try AttachmentImage.jpeg(at: images[0].url)).isEmpty,
                     "Clipboard image bytes did not survive attachment staging")
+        store.clear()
+        try require(!store.includesNote, "Clear unexpectedly re-enabled Markdown context")
+        var preferences: [Bool] = []
+        let configured = HermesStore(client: client, noteEnabled: false, notePreferenceChanged: { preferences.append($0) })
+        try require(!configured.includesNote, "Saved note switch was not restored")
+        configured.includesNote = true
+        configured.includesNote = false
+        configured.clear()
+        try require(preferences == [true, false], "Clear changed the saved note switch")
         print("PASS: explicit Shelf selection; input note switch; clipboard text/image staging; no implicit send or Markdown write; one manual save")
     }
 

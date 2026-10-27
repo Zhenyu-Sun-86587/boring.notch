@@ -148,7 +148,6 @@ struct HermesDrawer: View {
         .onChange(of: dropTarget) { _, targeted in vm.dropInteraction.dropZoneTargeting = targeted }
         .onChange(of: showingWidthControls) { _, showing in vm.isPopoverActive = showing || showingContextPicker }
         .onChange(of: showingContextPicker) { _, showing in vm.isPopoverActive = showing || showingWidthControls }
-        .onChange(of: surface.filePath) { _, _ in store.includesNote = true }
         .onAppear {
             inputFocused = false
             drawerVisible = true

@@ -16,7 +16,8 @@ struct StagedAttachment: Identifiable {
 
 @MainActor
 final class HermesStore: ObservableObject {
-    static let shared = HermesStore()
+    static let shared = HermesStore(noteEnabled: UserDefaults.standard.object(forKey: "island.hermesIncludeNote") as? Bool ?? true,
+                                    notePreferenceChanged: { UserDefaults.standard.set($0, forKey: "island.hermesIncludeNote") })
     @Published var input = "" { didSet { if input != oldValue { draftRevision &+= 1 } } }
     @Published private(set) var answer = ""
     @Published private(set) var turns: [HermesTranscript.Turn] = []
@@ -25,7 +26,9 @@ final class HermesStore: ObservableObject {
     @Published private(set) var isPreparingDrop = false
     @Published private(set) var isSaving = false
     @Published private(set) var attachments: [StagedAttachment] = []
-    @Published var includesNote = true
+    @Published var includesNote = true {
+        didSet { if includesNote != oldValue { notePreferenceChanged?(includesNote) } }
+    }
     @Published private(set) var selectedShelfIDs: Set<UUID> = []
     @Published var isWide = false
     @Published var capturesNotchDrops = false
@@ -42,6 +45,7 @@ final class HermesStore: ObservableObject {
     private let client: any HermesStreaming
     private let shelfAttachments: @MainActor (Set<UUID>) throws -> [StagedAttachment]
     private let clipboardPayload: @Sendable (String) async throws -> ClipboardPayload
+    private let notePreferenceChanged: ((Bool) -> Void)?
     private let idleExpirationDelay: Duration
     private var lockObserver: AnyCancellable?
     private var generation: Task<Void, Never>?
@@ -54,10 +58,13 @@ final class HermesStore: ObservableObject {
     private var generationID = UUID()
     init(client: any HermesStreaming = HermesClient(), idleExpirationDelay: Duration = .seconds(900),
          shelfAttachments: @escaping @MainActor (Set<UUID>) throws -> [StagedAttachment] = { try ShelfStateViewModel.shared.hermesAttachments(including: $0) },
-         clipboardPayload: @escaping @Sendable (String) async throws -> ClipboardPayload = { try await ClipboardStore.shared.contextPayload(id: $0) }) {
+         clipboardPayload: @escaping @Sendable (String) async throws -> ClipboardPayload = { try await ClipboardStore.shared.contextPayload(id: $0) },
+         noteEnabled: Bool = true, notePreferenceChanged: ((Bool) -> Void)? = nil) {
         self.client = client
         self.shelfAttachments = shelfAttachments
         self.clipboardPayload = clipboardPayload
+        self.notePreferenceChanged = notePreferenceChanged
+        self.includesNote = noteEnabled
         self.idleExpirationDelay = idleExpirationDelay
         // The store owns requests even when no drawer exists. Lock protection must have the
         // same lifetime; a view-scoped subscription disappears as soon as the notch closes.
@@ -101,7 +108,7 @@ final class HermesStore: ObservableObject {
     }
     func clear() {
         dropID = UUID()
-        stop(); transcript.clear(); turns = []; answer = ""; input = ""; includesNote = true; selectedShelfIDs = []; isWide = false; message = nil
+        stop(); transcript.clear(); turns = []; answer = ""; input = ""; selectedShelfIDs = []; isWide = false; message = nil
         expiration?.cancel(); expiration = nil
         releaseSubmission()
         for attachment in attachments { deleteTemporary(attachment) }
