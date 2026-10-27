@@ -31,6 +31,7 @@ assert result['status'] == 'ready' and result['helperAvailable'], result
 assert result['clipboardPasteTransport'] is True, result
 assert isinstance(result['clipboardPostEventAuthorized'], bool), result
 assert result['clipboardGUISessionAvailable'] is True, result
+assert isinstance(result['interactionDebugEnabled'], bool), result
 assert result['clipboardHelperPID'] > 0, result
 assert result['hermes'] is True and result['version'] == '2.8-rc.2', result
 assert any('\u3400' <= c <= '\u9fff' for c in result['localizedGeneral']), result

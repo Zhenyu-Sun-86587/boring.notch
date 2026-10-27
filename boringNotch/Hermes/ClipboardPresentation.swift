@@ -37,7 +37,9 @@ final class ClipboardPresentation: ObservableObject {
         InteractionDiagnostics.record("clipboard.presentation", stage,
             ["detail": detail(), "session": ClipboardStore.shared.sessionID.uuidString,
              "request": pasteActionID?.uuidString ?? "nil", "presented": String(sessionPresented), "pending": String(pasteActionID != nil),
-             "target": keyboardTargetApplication.map { String($0.processIdentifier) } ?? "nil"])
+             "target": keyboardTargetApplication.map { String($0.processIdentifier) } ?? "nil",
+             "foreground": NSWorkspace.shared.frontmostApplication.map { String($0.processIdentifier) } ?? "nil",
+             "bundle": NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "nil"])
     }
 
     func configure(windowManager: NotchWindowManager) {
@@ -51,6 +53,7 @@ final class ClipboardPresentation: ObservableObject {
                 guard let application = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
                 MainActor.assumeIsolated {
                     guard let self else { return }
+                    self.tracePaste("workspace-activation", "pid=\(application.processIdentifier)")
                     self.destinationTracker.observeActivation(application.processIdentifier, hostPID: hostPID)
                     if self.sessionPresented || self.pasteActionID != nil, application.processIdentifier != hostPID,
                        application.processIdentifier != self.keyboardTargetApplication?.processIdentifier {
@@ -64,6 +67,7 @@ final class ClipboardPresentation: ObservableObject {
                 guard let application = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
                 MainActor.assumeIsolated {
                     guard let self else { return }
+                    self.tracePaste("workspace-terminated", "pid=\(application.processIdentifier)")
                     self.destinationTracker.forget(application.processIdentifier)
                     if self.sessionPresented || self.pasteActionID != nil,
                        self.keyboardTargetApplication?.processIdentifier == application.processIdentifier {
