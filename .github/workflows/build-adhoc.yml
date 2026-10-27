@@ -56,6 +56,11 @@ jobs:
           python3 .github/scripts/test_clipboard_store.py 2>&1 | tee build/clipboard-store-report.txt
           python3 .github/scripts/typecheck_clipboard_presentation.py 2>&1 | tee build/clipboard-presentation-report.txt
           python3 .github/scripts/test_clipboard_session_runtime.py 2>&1 | tee build/clipboard-session-runtime-report.txt
+      - name: Verify actual clipboard drawer follows keyboard selection
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/test_clipboard_drawer_scroll.py 2>&1 | tee build/clipboard-drawer-scroll-report.txt
       - name: Verify native clipboard XPC and targeted event transport
         run: python3 .github/scripts/test_clipboard_native_event.py
       - name: Verify shipping helper joins the GUI session
@@ -138,6 +143,7 @@ jobs:
             build/clipboard-store-report.txt
             build/clipboard-presentation-report.txt
             build/clipboard-session-runtime-report.txt
+            build/clipboard-drawer-scroll-report.txt
             build/clipboard-gui-session-report.txt
             build/clipboard-alert-report.txt
             build/hermes-markdown-report.txt
@@ -163,6 +169,7 @@ jobs:
             build/clipboard-store-report.txt
             build/clipboard-presentation-report.txt
             build/clipboard-session-runtime-report.txt
+            build/clipboard-drawer-scroll-report.txt
             build/clipboard-gui-session-report.txt
             build/clipboard-alert-report.txt
             build/hermes-markdown-report.txt

@@ -35,12 +35,17 @@ public enum ClipboardSelectionPolicy {
 
     /// Only keyboard navigation requests scrolling, and only when its row crosses a viewport edge.
     public static func scrollEdge(row: CGRect?, viewportHeight: CGFloat, direction: Int) -> ScrollEdge? {
-        guard viewportHeight.isFinite, viewportHeight > 0 else { return nil }
+        scrollEdge(row: row, viewport: CGRect(x: 0, y: 0, width: 1, height: viewportHeight), direction: direction)
+    }
+
+    /// Rows and viewport are both in scroll-content coordinates, including the current offset.
+    public static func scrollEdge(row: CGRect?, viewport: CGRect, direction: Int) -> ScrollEdge? {
+        guard viewport.minY.isFinite, viewport.height.isFinite, viewport.height > 0 else { return nil }
         guard let row else { return direction < 0 ? .top : .bottom }
         guard row.minY.isFinite, row.maxY.isFinite else { return nil }
-        if row.minY >= -0.5, row.maxY <= viewportHeight + 0.5 { return nil }
-        if row.height > viewportHeight, row.minY <= 0, row.maxY >= viewportHeight { return nil }
-        return row.minY < 0 ? .top : .bottom
+        if row.minY >= viewport.minY - 0.5, row.maxY <= viewport.maxY + 0.5 { return nil }
+        if row.height > viewport.height, row.minY <= viewport.minY, row.maxY >= viewport.maxY { return nil }
+        return row.minY < viewport.minY ? .top : .bottom
     }
 
     public static func hitID(at point: CGPoint, viewport: CGRect, rows: [String: CGRect]) -> String? {

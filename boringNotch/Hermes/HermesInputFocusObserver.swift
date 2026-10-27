@@ -5,12 +5,14 @@ import SwiftUI
 /// Observe this drawer's actual panel; window activation remains the window bridge's responsibility.
 struct HermesInputFocusObserver: NSViewRepresentable {
     let enabled: Bool
+    var activation: UUID? = nil
     let isCurrent: () -> Bool
     let setFocused: (Bool) -> Void
 
     @MainActor
     final class Anchor: NSView {
         private var enabled = false
+        private var activation: UUID?
         private var isCurrent: (() -> Bool)?
         private var setFocused: ((Bool) -> Void)?
         private var generation = HermesFocusGeneration()
@@ -21,8 +23,9 @@ struct HermesInputFocusObserver: NSViewRepresentable {
 
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
-        func receive(enabled: Bool, isCurrent: @escaping () -> Bool, setFocused: @escaping (Bool) -> Void) {
-            let changed = self.enabled != enabled
+        func receive(enabled: Bool, activation: UUID?, isCurrent: @escaping () -> Bool, setFocused: @escaping (Bool) -> Void) {
+            let changed = self.enabled != enabled || self.activation != activation
+            self.activation = activation
             self.enabled = enabled
             self.isCurrent = isCurrent
             self.setFocused = setFocused
@@ -114,7 +117,7 @@ struct HermesInputFocusObserver: NSViewRepresentable {
 
     func makeNSView(context: Context) -> Anchor { Anchor(frame: .zero) }
     func updateNSView(_ view: Anchor, context: Context) {
-        view.receive(enabled: enabled, isCurrent: isCurrent, setFocused: setFocused)
+        view.receive(enabled: enabled, activation: activation, isCurrent: isCurrent, setFocused: setFocused)
     }
     static func dismantleNSView(_ view: Anchor, coordinator: ()) { view.invalidate() }
 }

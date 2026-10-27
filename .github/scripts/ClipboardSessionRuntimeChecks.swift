@@ -117,6 +117,7 @@ class BoringNotchSkyLightWindow: NSPanel {
 }
 @MainActor final class XPCHelperClient {
   static let shared = XPCHelperClient()
+  var duringPaste: (() -> Void)?
   var pastes = 0
   var destinations: [Int32] = []
   func captureClipboardTarget(_ pid: Int32) async -> ClipboardPasteTarget? {
@@ -128,6 +129,8 @@ class BoringNotchSkyLightWindow: NSPanel {
   {
     pastes += 1
     destinations.append(pid)
+    duringPaste?()
+    try? await Task.sleep(for: .milliseconds(30))
     return .posted
   }
 }
@@ -174,7 +177,7 @@ let openNotchSize = CGSize(width: 640, height: 190)
       backing: .buffered, defer: false)
     for mode in [
       "hover-after-settings", "keyboard", "hover", "hover-new-editor", "active-own-editor",
-      "pending-own-editor",
+      "pending-own-editor", "nonactivating-resign", "hidden-owner", "handoff-visible-update", "repeat-hover-1", "repeat-hover-2",
     ] {
       FixtureWorkspace.shared.frontmostApplication = target
       BoringViewCoordinator.shared.currentView = .clipboard
@@ -197,6 +200,23 @@ let openNotchSize = CGSize(width: 640, height: 190)
       presentation.updateKeyboardTargetVisibility(owner: owner, visible: true)
       presentation.updateVisibility(owner: owner, screenUUID: "fixture", visible: true)
       await ready { presentation.keyboardTargetReady }
+      let openedSession = FixtureStore.shared.sessionID
+      if mode == "nonactivating-resign" {
+        NotificationCenter.default.post(name: NSApplication.didResignActiveNotification, object: nil)
+        await Task.yield()
+        await Task.yield()
+        require(FixtureStore.shared.sessionID == openedSession, "inactive app notification ended nonactivating panel session")
+      }
+      if mode == "hidden-owner" {
+        presentation.updateVisibility(owner: UUID(), screenUUID: "fixture", visible: false)
+        require(FixtureStore.shared.sessionID == openedSession, "unrelated hidden drawer ended the visible session")
+      }
+      if mode == "handoff-visible-update" {
+        XPCHelperClient.shared.duringPaste = {
+          presentation.updateVisibility(owner: owner, screenUUID: "fixture", visible: true)
+          presentation.updateVisibility(owner: owner, screenUUID: "fixture", visible: false)
+        }
+      }
       if mode == "active-own-editor" {
         // The same event DURING a lease must still invalidate the destination.
         NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: settings)
@@ -218,6 +238,7 @@ let openNotchSize = CGSize(width: 640, height: 190)
         await ready { ClipboardPermissionController.shared.failures.count > replies }
       }
       await Task.yield()
+      XPCHelperClient.shared.duringPaste = nil
       let cancelled = mode == "active-own-editor" || mode == "pending-own-editor"
       require(
         XPCHelperClient.shared.pastes - prior == (cancelled ? 0 : 1),

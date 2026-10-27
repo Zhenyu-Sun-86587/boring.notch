@@ -35,6 +35,10 @@ func runClipboardSelectionChecks() throws {
     try selectionCheck(ClipboardSelectionPolicy.scrollEdge(row: visible.offsetBy(dx: 0, dy: 240), viewportHeight: 300, direction: 1) == .bottom, "reveal only the clipped bottom edge")
     try selectionCheck(ClipboardSelectionPolicy.scrollEdge(row: nil, viewportHeight: 300, direction: 1) == .bottom, "unrealized lazy rows can scroll into view")
     try selectionCheck(ClipboardSelectionPolicy.scrollEdge(row: visible, viewportHeight: 0, direction: 1) == nil, "a pending viewport layout cannot trigger scrolling")
+    let scrolledViewport = CGRect(x: 0, y: 1000, width: 500, height: 300)
+    try selectionCheck(ClipboardSelectionPolicy.scrollEdge(row: CGRect(x: 0, y: 1100, width: 500, height: 56), viewport: scrolledViewport, direction: 1) == nil, "already scrolled visible selection stays in place")
+    try selectionCheck(ClipboardSelectionPolicy.scrollEdge(row: CGRect(x: 0, y: 1270, width: 500, height: 56), viewport: scrolledViewport, direction: 1) == .bottom, "down follows the current content offset")
+    try selectionCheck(ClipboardSelectionPolicy.scrollEdge(row: CGRect(x: 0, y: 980, width: 500, height: 56), viewport: scrolledViewport, direction: -1) == .top, "up follows the current content offset")
     let viewport = CGRect(x: 0, y: 0, width: 500, height: 300)
     let frames = ["first": visible, "partially-clipped": CGRect(x: 0, y: 280, width: 500, height: 56)]
     try selectionCheck(ClipboardSelectionPolicy.hitID(at: CGPoint(x: 100, y: 60), viewport: viewport, rows: frames) == "first", "click hits a visible row immediately")

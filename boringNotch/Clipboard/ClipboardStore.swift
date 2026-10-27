@@ -354,6 +354,7 @@ final class ClipboardStore: ObservableObject {
     }
     func copy(_ record: ClipboardHistoryRecord, paste: Bool) {
         guard !busy, !pasting, !locked else { return }
+        select(record.id)
         busy = true
         let generation = sessionGeneration
         let initialChangeCount = pasteboard.changeCount

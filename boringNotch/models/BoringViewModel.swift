@@ -18,6 +18,7 @@ final class BoringViewModel: NSObject, ObservableObject {
     let dropInteraction = DropInteractionState()
     let tabOwnerID = UUID()
 
+    @Published private(set) var inputSessionID = UUID()
     @Published private(set) var notchState: NotchState = .closed
 
     var cancellables: Set<AnyCancellable> = []
@@ -181,6 +182,7 @@ final class BoringViewModel: NSObject, ObservableObject {
         coordinator.prepareTabForOpening(owner: tabOwnerID, requested: tab)
         guard notchState != .open else { return false }
 
+        inputSessionID = UUID()
         self.notchSize = coordinator.currentView == .hermes
             ? HermesLayout.size(screenUUID: screenUUID, wide: HermesStore.shared.isWide) : openNotchSize
         if coordinator.currentView == .clipboard { self.notchSize = ClipboardLayout.size(screenUUID: screenUUID) }

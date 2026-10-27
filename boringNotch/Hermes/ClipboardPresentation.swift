@@ -14,7 +14,7 @@ final class ClipboardPresentation: ObservableObject {
     private var observers: [NSObjectProtocol] = []
     private var visibility = ClipboardVisibilityState()
     private var ownerWindows: [UUID: ObjectIdentifier] = [:]
-    private var sessionPresented = false
+    @Published private(set) var sessionPresented = false
     private var keyboardOwners = Set<UUID>()
     private var keyboardTargetApplication: NSRunningApplication?
     private var destinationTracker = ClipboardDestinationTracker()
@@ -105,21 +105,9 @@ final class ClipboardPresentation: ObservableObject {
             }
             return event
         }
-        observers.append(NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification,
-            object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated {
-                    guard let self, self.sessionPresented else { return }
-                    let sessionID = ClipboardStore.shared.sessionID
-                    Task { @MainActor in
-                        await Task.yield()
-                        guard self.sessionPresented, ClipboardStore.shared.sessionID == sessionID,
-                              BoringViewCoordinator.shared.currentView == .clipboard,
-                              !self.notchPanels.contains(where: \.isIslandKeyboardHandoffActive) else { return }
-                        self.targetInvalidatedByOwnEditor = true
-                        self.dismiss()
-                    }
-                }
-            })
+        // A nonactivating panel can own keyboard focus while NSApp is inactive.
+        // External application activation and actual outside clicks own dismissal;
+        // NSApplication.didResignActive is not a clipboard-session boundary.
         observers.append(NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification,
             object: nil, queue: .main) { [weak self] note in
                 guard let window = note.object as? NSWindow, !(window is BoringNotchSkyLightWindow) else { return }
@@ -261,6 +249,15 @@ final class ClipboardPresentation: ObservableObject {
         // Global events belong to another app; local callers already excluded notch
         // windows. The fixed transparent panel envelope is not a hit-test region.
         guard sessionPresented || pasteActionID != nil else { return }
+        // Nonactivating windows can receive a click before they acquire key status.
+        // A global monitor must not classify our visible interactive surface as outside.
+        let point = NSEvent.mouseLocation
+        if notchPanels.contains(where: { panel in
+            guard panel.isVisible, !panel.isIslandKeyboardHandoffActive, let content = panel.contentView else { return false }
+            let local = panel.convertPoint(fromScreen: point)
+            let hit = content.superview?.convert(local, from: nil) ?? local
+            return content.hitTest(hit) != nil
+        }) { return }
         // This click is a new input intention. Close without reactivating the old editor.
         targetInvalidatedByOwnEditor = true
         dismiss()
@@ -353,7 +350,7 @@ final class ClipboardPresentation: ObservableObject {
     }
 
     private func captureMouseTarget(owner: UUID) {
-        guard !ClipboardStore.shared.keyboardSessionActive,
+        guard pasteActionID == nil, !ClipboardStore.shared.keyboardSessionActive,
               let screen = visibility.visibleOwners[owner],
               NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })?.displayUUID == screen,
               visibility.claimMouse(owner: owner) else { return }
@@ -385,12 +382,13 @@ final class ClipboardPresentation: ObservableObject {
         ClipboardStore.shared.endSession()
     }
 
-    func dismiss() {
+    func dismiss(cause: StaticString = #function) {
+        tracePaste("dismiss", "cause=\(cause) presented=\(sessionPresented) pending=\(pasteActionID != nil)")
         let target = keyboardTargetApplication
         let mayReturnFocus = !targetInvalidatedByOwnEditor && windowManager?.isScreenLocked == false
             && (NSWorkspace.shared.frontmostApplication?.processIdentifier == target?.processIdentifier
                 || NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier)
-        cancelPendingPaste()
+        cancelPendingPaste(cause: cause)
         clearSession()
         closeDrawers()
         if mayReturnFocus, let target, !target.isTerminated {

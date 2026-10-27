@@ -120,7 +120,7 @@ struct HermesDrawer: View {
             .font(.caption).buttonStyle(.plain).foregroundStyle(.secondary)
         }
         .padding(.bottom, 8)
-        .background(HermesInputFocusObserver(enabled: shouldFocusInput, isCurrent: { shouldFocusInput }) { focused in
+        .background(HermesInputFocusObserver(enabled: shouldFocusInput, activation: vm.inputSessionID, isCurrent: { shouldFocusInput }) { focused in
             if inputFocused != focused { inputFocused = focused }
         })
         .overlay { if dropTarget { RoundedRectangle(cornerRadius: 12).stroke(.tint, lineWidth: 2).allowsHitTesting(false) } }
@@ -129,10 +129,12 @@ struct HermesDrawer: View {
             store.stage(providers)
             return true
         }
+        .onChange(of: vm.inputSessionID) { _, _ in inputFocused = false }
         .onChange(of: dropTarget) { _, targeted in vm.dropInteraction.dropZoneTargeting = targeted }
         .onChange(of: showingWidthControls) { _, showing in vm.isPopoverActive = showing }
         .onChange(of: surface.hasFile) { _, hasFile in if !hasFile { store.includesNote = false } }
         .onAppear {
+            inputFocused = false
             drawerVisible = true
             store.appeared(vm.screenUUID ?? "primary")
         }

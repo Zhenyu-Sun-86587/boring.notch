@@ -5,9 +5,11 @@ import SwiftUI
 struct ClipboardDrawer: View {
     @ObservedObject private var store = ClipboardStore.shared
     @ObservedObject private var presentation = ClipboardPresentation.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var searchFocused: Bool
     @State private var rowFrames: [String: CGRect] = [:]
-    @State private var viewportHeight: CGFloat = 0
+    @State private var contentRowFrames: [String: CGRect] = [:]
+    @State private var visibleContentRect: CGRect = .zero
     @State private var focusTask: Task<Void, Never>?
 
     var body: some View {
@@ -17,6 +19,10 @@ struct ClipboardDrawer: View {
                 TextField("搜索剪贴板", text: $store.search)
                     .textFieldStyle(.plain)
                     .focused($searchFocused)
+                    .onKeyPress(.downArrow, phases: [.down, .repeat]) { handle(.down, press: $0) }
+                    .onKeyPress(.upArrow, phases: [.down, .repeat]) { handle(.up, press: $0) }
+                    .onKeyPress(.return, phases: .down) { handle(.enter, press: $0) }
+                    .onKeyPress(.escape, phases: .down) { handle(.escape, press: $0) }
                 if !store.search.isEmpty {
                     Button { store.search = ""; focusSearch() } label: { Image(systemName: "xmark.circle.fill") }
                         .buttonStyle(.plain).foregroundStyle(.secondary).help("清空搜索")
@@ -57,7 +63,8 @@ struct ClipboardDrawer: View {
                     ScrollView {
                         LazyVStack(spacing: 4) {
                             ForEach(store.filteredRecords) { record in
-                                ClipboardHistoryRow(record: record, selected: store.selectedID == record.id)
+                                ClipboardHistoryRow(record: record, selected: store.selectedID == record.id,
+                                    activating: store.busy && store.selectedID == record.id)
                                     .contentShape(Rectangle())
                                     .contextMenu {
                                         Button("粘贴") { store.copy(record, paste: true) }
@@ -70,35 +77,40 @@ struct ClipboardDrawer: View {
                                         GeometryReader { geometry in
                                             Color.clear.preference(key: ClipboardRowFrames.self,
                                                 value: [record.id: geometry.frame(in: .named("clipboardViewport"))])
+                                                .preference(key: ClipboardContentRowFrames.self,
+                                                    value: [record.id: geometry.frame(in: .named("clipboardContent"))])
                                         }
                                     }
                                     .id(record.id)
                             }
                         }
-                        .transaction { $0.animation = nil }
+                        .coordinateSpace(name: "clipboardContent")
                     }
                     .coordinateSpace(name: "clipboardViewport")
                     .background {
-                        GeometryReader { geometry in
+                        GeometryReader { _ in
                             ClipboardPointerObserver(rowFrames: rowFrames,
                                 keyboardRevision: store.keyboardSelectionRevision,
                                 select: { id in store.select(id) }, activate: { id in
                                     guard let record = store.filteredRecords.first(where: { $0.id == id }) else { return }
                                     store.copy(record, paste: true)
                                 })
-                                .preference(key: ClipboardViewportHeight.self, value: geometry.size.height)
+
                         }
                     }
                     .onPreferenceChange(ClipboardRowFrames.self) { rowFrames = $0 }
-                    .onPreferenceChange(ClipboardViewportHeight.self) { viewportHeight = $0 }
+                    .onPreferenceChange(ClipboardContentRowFrames.self) { contentRowFrames = $0 }
+                    .onScrollGeometryChange(for: CGRect.self) { $0.visibleRect } action: { _, rectangle in
+                        visibleContentRect = rectangle
+                    }
                     .onChange(of: store.keyboardSelectionRevision) { _, _ in
                         guard let id = store.selectedID,
-                              let edge = ClipboardSelectionPolicy.scrollEdge(row: rowFrames[id],
-                                viewportHeight: viewportHeight, direction: store.keyboardSelectionDirection) else { return }
+                              let edge = ClipboardSelectionPolicy.scrollEdge(row: contentRowFrames[id],
+                                viewport: visibleContentRect, direction: store.keyboardSelectionDirection) else { return }
                         // Arrow keys reveal only the clipped edge; mouse selection never scrolls the list.
-                        var transaction = Transaction()
-                        transaction.disablesAnimations = true
-                        withTransaction(transaction) { proxy.scrollTo(id, anchor: edge == .top ? .top : .bottom) }
+                        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.12)) {
+                            proxy.scrollTo(id, anchor: edge == .top ? .top : .bottom)
+                        }
                     }
                 }
             }
@@ -112,6 +124,8 @@ struct ClipboardDrawer: View {
             }
             HStack {
                 Text("\(store.filteredRecords.count) 条").foregroundStyle(.secondary)
+                Text("↑↓ 选择  ·  ↩ 粘贴  ·  ⌘↩ 复制")
+                    .foregroundStyle(.tertiary).lineLimit(1)
                 Spacer()
                 Button("复制") { store.copySelected(paste: false) }
                     .disabled(store.selectedRecord == nil || store.busy || store.pasting)
@@ -132,13 +146,15 @@ struct ClipboardDrawer: View {
         .onAppear {
             store.start()
         }
+        .onChange(of: store.sessionID) { _, _ in searchFocused = false }
         .onChange(of: store.keyboardSessionActive) { _, value in
             if !value { focusTask?.cancel(); searchFocused = false }
         }
-        .background(HermesInputFocusObserver(enabled: store.keyboardSessionActive && presentation.keyboardTargetReady,
+        .background(HermesInputFocusObserver(enabled: presentation.sessionPresented && presentation.keyboardTargetReady,
+            activation: store.sessionID,
             isCurrent: { BoringViewCoordinator.shared.currentView == .clipboard },
             setFocused: { value in if searchFocused != value { searchFocused = value } }))
-        .onDisappear { focusTask?.cancel(); focusTask = nil; searchFocused = false; rowFrames = [:] }
+        .onDisappear { focusTask?.cancel(); focusTask = nil; searchFocused = false; rowFrames = [:]; contentRowFrames = [:] }
     }
 
     private var isComposing: Bool { (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() ?? false }
@@ -170,9 +186,11 @@ private struct ClipboardRowFrames: PreferenceKey {
     }
 }
 
-private struct ClipboardViewportHeight: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+private struct ClipboardContentRowFrames: PreferenceKey {
+    static let defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
 }
 
 /// Observe local events without becoming a hit target or stealing the search field's first responder.
@@ -290,6 +308,8 @@ private struct ClipboardPointerObserver: NSViewRepresentable {
 private struct ClipboardHistoryRow: View {
     let record: ClipboardHistoryRecord
     let selected: Bool
+    let activating: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var thumbnail: NSImage?
     private var icon: String {
         switch record.kind { case .image: "photo"; case .file: "doc"; case .text: "text.alignleft" }
@@ -313,10 +333,21 @@ private struct ClipboardHistoryRow: View {
                 }
                 .font(.caption2).foregroundStyle(.secondary)
             }
+            Group {
+                if activating {
+                    ProgressView().controlSize(.small)
+                } else if selected {
+                    Image(systemName: "return").font(.caption).foregroundStyle(.secondary)
+                } else { Color.clear }
+            }.frame(width: 20, height: 20)
             if record.favorite { Image(systemName: "pin.fill").font(.caption).foregroundStyle(.secondary) }
         }
         .padding(8)
-        .background(selected ? Color.white.opacity(0.12) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+        .background(selected ? Color.white.opacity(0.14) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8).strokeBorder(.white.opacity(selected ? 0.12 : 0), lineWidth: 1)
+        }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.1), value: selected)
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
         .task(id: record.id) { thumbnail = await ClipboardStore.shared.thumbnail(for: record) }
