@@ -66,9 +66,10 @@ final class ShelfStateViewModel: ObservableObject {
     }
 
     /// Keep Shelf ownership: sending context never consumes or deletes a shelf file.
-    func hermesAttachments(excluding ids: Set<UUID>) throws -> [StagedAttachment] {
-        try items.compactMap { item in
-            guard !ids.contains(item.id), case .file(let bookmark) = item.kind else { return nil }
+    func hermesAttachments(including ids: Set<UUID>) throws -> [StagedAttachment] {
+        guard !ids.isEmpty else { return [] }
+        return try items.compactMap { item in
+            guard ids.contains(item.id), case .file(let bookmark) = item.kind else { return nil }
             guard let url = resolveAndUpdateBookmark(for: item) else {
                 throw IslandError.configuration("无法读取暂存区文件，请移除失效项目或重新拖入。")
             }

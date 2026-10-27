@@ -10,11 +10,12 @@ struct HermesDrawer: View {
     @ObservedObject private var surface = SurfaceAccess.shared
     @FocusState private var inputFocused: Bool
     @State private var dropTarget = false
+    @State private var showingContextPicker = false
     @State private var showingWidthControls = false
     @State private var drawerVisible = false
 
     private var shelfFiles: [ShelfItem] {
-        shelf.items.filter { if case .file = $0.kind { return !store.excludedShelfIDs.contains($0.id) }; return false }
+        shelf.items.filter { if case .file = $0.kind { return store.selectedShelfIDs.contains($0.id) }; return false }
     }
 
     var body: some View {
@@ -61,11 +62,11 @@ struct HermesDrawer: View {
                         }
                         ForEach(shelfFiles) { item in
                             attachmentChip(name: item.displayName, icon: "tray", removeLabel: "取消引用暂存区文件") {
-                                store.excludeShelfItem(item.id)
+                                store.toggleShelfItem(item.id)
                             }
                         }
                         ForEach(store.attachments) { item in
-                            attachmentChip(name: item.url.lastPathComponent, icon: "paperclip", removeLabel: "移除附件") {
+                            attachmentChip(name: item.displayName, icon: "paperclip", removeLabel: "移除附件") {
                                 store.remove(item)
                             }
                         }
@@ -78,6 +79,16 @@ struct HermesDrawer: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             HStack(alignment: .bottom, spacing: 10) {
+                Button("添加上下文", systemImage: "paperclip") { showingContextPicker = true }
+                    .labelStyle(.iconOnly).buttonStyle(.plain).help("从暂存区或剪贴板添加上下文")
+                    .disabled(store.isGenerating || store.isPreparingDrop)
+                    .popover(isPresented: $showingContextPicker) {
+                        HermesContextPicker { showingContextPicker = false }
+                    }
+                Toggle("便签", isOn: $store.includesNote)
+                    .toggleStyle(.switch).controlSize(.mini).font(.caption)
+                    .help(surface.hasFile ? "引用 " + surface.fileName : "请先在设置中绑定 Markdown 文件")
+                    .disabled(!surface.hasFile || store.isGenerating)
                 TextField("输入消息…", text: $store.input, axis: .vertical)
                     .lineLimit(1...4).textFieldStyle(.plain).focused($inputFocused)
                     .background(IslandInputInteraction(region: "hermes.prompt"))
@@ -107,20 +118,6 @@ struct HermesDrawer: View {
                     .disabled(store.answer.isEmpty || store.isGenerating || store.isSaving || !surface.hasFile)
                 Button("清空", systemImage: "trash") { store.clear() }
                 Spacer()
-                Button("引用便签", systemImage: store.includesNote && surface.hasFile ? "doc.text.fill" : "doc.text") {
-                    let wasBound = surface.hasFile
-                    if !wasBound {
-                        vm.isPopoverActive = true
-                        surface.chooseFile()
-                        vm.isPopoverActive = false
-                    }
-                    if surface.hasFile { store.includesNote = wasBound ? !store.includesNote : true }
-                }
-                .labelStyle(.iconOnly).help("引用便签").disabled(store.isGenerating)
-                if !store.excludedShelfIDs.isEmpty {
-                    Button("恢复暂存区引用", systemImage: "tray.and.arrow.down") { store.includeShelfItems() }
-                        .labelStyle(.iconOnly).help("恢复暂存区引用").disabled(store.isGenerating)
-                }
                 Button("设置", systemImage: "gearshape") { SettingsWindowController.shared.showIslandSettings() }
                     .labelStyle(.iconOnly).help("设置")
                 Menu {
@@ -149,7 +146,8 @@ struct HermesDrawer: View {
         .onChange(of: inputFocused) { _, value in InteractionDiagnostics.record("hermes.input", "focus-state", ["allowed": String(value), "activation": vm.inputSessionID.uuidString]) }
         .onChange(of: vm.inputSessionID) { _, _ in inputFocused = false }
         .onChange(of: dropTarget) { _, targeted in vm.dropInteraction.dropZoneTargeting = targeted }
-        .onChange(of: showingWidthControls) { _, showing in vm.isPopoverActive = showing }
+        .onChange(of: showingWidthControls) { _, showing in vm.isPopoverActive = showing || showingContextPicker }
+        .onChange(of: showingContextPicker) { _, showing in vm.isPopoverActive = showing || showingWidthControls }
         .onChange(of: surface.filePath) { _, _ in store.includesNote = true }
         .onAppear {
             inputFocused = false
@@ -159,6 +157,7 @@ struct HermesDrawer: View {
         .onDisappear {
             drawerVisible = false
             inputFocused = false
+            if showingContextPicker || showingWidthControls { vm.isPopoverActive = false }
             vm.dropInteraction.dropZoneTargeting = false
             store.disappeared(vm.screenUUID ?? "primary")
         }
@@ -167,7 +166,7 @@ struct HermesDrawer: View {
 
     private var shouldFocusInput: Bool {
         drawerVisible && vm.notchState == .open && BoringViewCoordinator.shared.currentView == .hermes
-            && !vm.isPopoverActive && !showingWidthControls
+            && !vm.isPopoverActive && !showingWidthControls && !showingContextPicker
     }
 
     @ViewBuilder

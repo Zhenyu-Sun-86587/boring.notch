@@ -8,8 +8,9 @@ struct StagedAttachment: Identifiable {
     let url: URL
     let temporary: Bool
     let bookmark: Data?
-    init(id: UUID = UUID(), url: URL, temporary: Bool, bookmark: Data? = nil) {
-        self.id = id; self.url = url; self.temporary = temporary; self.bookmark = bookmark
+    let displayName: String
+    init(id: UUID = UUID(), url: URL, temporary: Bool, bookmark: Data? = nil, name: String? = nil) {
+        self.id = id; self.url = url; self.temporary = temporary; self.bookmark = bookmark; self.displayName = name ?? url.lastPathComponent
     }
 }
 
@@ -25,7 +26,7 @@ final class HermesStore: ObservableObject {
     @Published private(set) var isSaving = false
     @Published private(set) var attachments: [StagedAttachment] = []
     @Published var includesNote = true
-    @Published private(set) var excludedShelfIDs: Set<UUID> = []
+    @Published private(set) var selectedShelfIDs: Set<UUID> = []
     @Published var isWide = false
     @Published var capturesNotchDrops = false
     @Published var message: String?
@@ -40,6 +41,7 @@ final class HermesStore: ObservableObject {
     private var retryableSubmission: Submission?
     private let client: any HermesStreaming
     private let shelfAttachments: @MainActor (Set<UUID>) throws -> [StagedAttachment]
+    private let clipboardPayload: @Sendable (String) async throws -> ClipboardPayload
     private let idleExpirationDelay: Duration
     private var lockObserver: AnyCancellable?
     private var generation: Task<Void, Never>?
@@ -51,9 +53,11 @@ final class HermesStore: ObservableObject {
     private var visible: Set<String> = []
     private var generationID = UUID()
     init(client: any HermesStreaming = HermesClient(), idleExpirationDelay: Duration = .seconds(900),
-         shelfAttachments: @escaping @MainActor (Set<UUID>) throws -> [StagedAttachment] = { try ShelfStateViewModel.shared.hermesAttachments(excluding: $0) }) {
+         shelfAttachments: @escaping @MainActor (Set<UUID>) throws -> [StagedAttachment] = { try ShelfStateViewModel.shared.hermesAttachments(including: $0) },
+         clipboardPayload: @escaping @Sendable (String) async throws -> ClipboardPayload = { try await ClipboardStore.shared.contextPayload(id: $0) }) {
         self.client = client
         self.shelfAttachments = shelfAttachments
+        self.clipboardPayload = clipboardPayload
         self.idleExpirationDelay = idleExpirationDelay
         // The store owns requests even when no drawer exists. Lock protection must have the
         // same lifetime; a view-scoped subscription disappears as soon as the notch closes.
@@ -97,19 +101,17 @@ final class HermesStore: ObservableObject {
     }
     func clear() {
         dropID = UUID()
-        stop(); transcript.clear(); turns = []; answer = ""; input = ""; includesNote = true; excludedShelfIDs = []; isWide = false; message = nil
+        stop(); transcript.clear(); turns = []; answer = ""; input = ""; includesNote = true; selectedShelfIDs = []; isWide = false; message = nil
         expiration?.cancel(); expiration = nil
         releaseSubmission()
         for attachment in attachments { deleteTemporary(attachment) }
         attachments = []
     }
-    func excludeShelfItem(_ id: UUID) {
+    func toggleShelfItem(_ id: UUID) {
         guard !isGenerating else { return }
-        excludedShelfIDs.insert(id)
-    }
-    func includeShelfItems() {
-        guard !isGenerating else { return }
-        excludedShelfIDs = []
+        if selectedShelfIDs.contains(id) { selectedShelfIDs.remove(id); return }
+        guard selectedShelfIDs.count + attachments.count < 6 else { message = "最多附加 6 个文件，请先移除已有附件。"; return }
+        selectedShelfIDs.insert(id)
     }
     func remove(_ attachment: StagedAttachment) {
         guard !isGenerating else { return }
@@ -139,6 +141,27 @@ final class HermesStore: ObservableObject {
             } catch { message = error.localizedDescription }
         }
     }
+    func stageClipboard(_ recordID: String) {
+        guard !isGenerating, !isPreparingDrop else { return }
+        let remaining = 6 - attachments.count
+        guard remaining > 0 else { message = "最多暂存 6 个附件。"; return }
+        isPreparingDrop = true; message = nil
+        let id = UUID(); dropID = id
+        Task {
+            defer { isPreparingDrop = false }
+            do {
+                let payload = try await clipboardPayload(recordID)
+                let staged = try await Task.detached(priority: .userInitiated) {
+                    try HermesClipboardContext.files(from: payload, maximumCount: remaining)
+                }.value
+                guard id == dropID else {
+                    for item in staged { deleteTemporary(item) }
+                    return
+                }
+                attachments.append(contentsOf: staged)
+            } catch { if id == dropID { message = error.localizedDescription } }
+        }
+    }
     func send() {
         guard !isGenerating, !isPreparingDrop, !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         let prompt = input
@@ -149,7 +172,7 @@ final class HermesStore: ObservableObject {
         do {
             configuration = try IslandSettings.hermes()
             note = includesNote && SurfaceAccess.shared.hasFile ? try SurfaceAccess.shared.snapshot() : nil
-            let shelf = try shelfAttachments(excludedShelfIDs)
+            let shelf = try shelfAttachments(selectedShelfIDs)
             var paths = Set(attachments.map { $0.url.standardizedFileURL.path })
             staged = attachments + shelf.filter { paths.insert($0.url.standardizedFileURL.path).inserted }
             guard staged.count <= 6 else { throw IslandError.limit("最多附加 6 个文件，请移除多余附件或暂存区引用。") }

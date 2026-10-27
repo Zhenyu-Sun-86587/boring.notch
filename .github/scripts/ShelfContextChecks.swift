@@ -69,14 +69,14 @@ func provider(_ type: UTType, _ data: Data) -> NSItemProvider {
         let items = try await ShelfDropService.items(from: [fileProvider, imageProvider])
         shelf.add(items)
         defer { for item in items { shelf.remove(item) } }
-        let context = try shelf.hermesAttachments(excluding: [])
+        let context = try shelf.hermesAttachments(including: Set(items.map(\.id)))
         try check(context.count == 2 && context.allSatisfy { !$0.temporary && $0.bookmark != nil }, "Shelf snapshot lost scoped bookmarks or source ownership")
-        try check(try shelf.hermesAttachments(excluding: Set(items.map(\.id))).isEmpty, "Excluded Shelf files still attached")
+        try check(try shelf.hermesAttachments(including: []).isEmpty, "Excluded Shelf files still attached")
         try check(FileManager.default.fileExists(atPath: file.path), "Snapshot consumed original source")
         let stale = ShelfItem(kind: .file(bookmark: Data([0xff])))
         shelf.add([stale])
-        try check(try shelf.hermesAttachments(excluding: [stale.id]).count == 2, "Excluded stale file prevented submission")
-        do { _ = try shelf.hermesAttachments(excluding: []); throw Failure(message: "Stale file silently omitted") }
+        try check(try shelf.hermesAttachments(including: Set(items.map(\.id))).count == 2, "Excluded stale file prevented submission")
+        do { _ = try shelf.hermesAttachments(including: [stale.id]); throw Failure(message: "Stale file silently omitted") }
         catch is Failure { throw Failure(message: "Stale file silently omitted") }
         catch {}
         shelf.remove(stale)

@@ -351,6 +351,16 @@ final class ClipboardStore: ObservableObject {
         selectedID = next
         keyboardSelectionRevision &+= 1
     }
+    /// Explicit attachment selection reads only local history; it never copies, pastes or changes focus.
+    func contextPayload(id: String) async throws -> ClipboardPayload {
+        guard !locked, records.contains(where: { $0.id == id && $0.kind != .file }) else { throw ClipboardHistoryError.missing }
+        try Task.checkCancellation()
+        let payload = try await loadPayload(id)
+        try Task.checkCancellation()
+        guard !locked, records.contains(where: { $0.id == id && $0.kind != .file }) else { throw ClipboardHistoryError.missing }
+        return payload
+    }
+
     func copySelected(paste: Bool) {
         InteractionDiagnostics.record("clipboard.store", "activate-selected", ["selected": String(selectedRecord != nil), "busy": String(busy), "pasting": String(pasting), "post": String(paste), "session": sessionID.uuidString])
         guard let record = selectedRecord, !busy, !pasting else { return }

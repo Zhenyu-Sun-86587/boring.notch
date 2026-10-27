@@ -32,6 +32,8 @@ struct NoteSelection: Sendable { let name = "fixture.md" }
     var fail = false
     var hasFile = false
     var suspended = false
+    var appendCount = 0
+    var lastSaved = ""
     var waiting: CheckedContinuation<String, any Error>?
     func acquire() {}
     func release() {}
@@ -41,11 +43,16 @@ struct NoteSelection: Sendable { let name = "fixture.md" }
         if suspended { return try await withCheckedThrowingContinuation { waiting = $0 } }
         return "\n便签上下文"
     }
-    func appendTask(_ text: String, selection: NoteSelection) async throws {}
+    func appendTask(_ text: String, selection: NoteSelection) async throws { appendCount += 1; lastSaved = text }
 }
 @MainActor struct ShelfStateViewModel {
     static let shared = Self()
-    func hermesAttachments(excluding: Set<UUID>) throws -> [StagedAttachment] { [] }
+    func hermesAttachments(including: Set<UUID>) throws -> [StagedAttachment] { [] }
+}
+
+@MainActor struct ClipboardStore {
+    static let shared = Self()
+    func contextPayload(id: String) async throws -> ClipboardPayload { throw ClipboardHistoryError.missing }
 }
 
 struct ShelfStagedFile { let url: URL; let temporary: Bool }
@@ -102,6 +109,7 @@ private actor SubmissionClient: HermesStreaming {
         try await backgroundGenerationSurvivesDrawerChanges()
         try await backgroundPreflightAndLock()
         try await defaultContextAndShelfFiles()
+        try await explicitSelectionClipboardAndManualSave()
         try await fiveRoundContextAndImages()
         print("PASS: production HermesStore draft preflight, immediate user turn, thinking, partial failure, retry, cancellation and stale callbacks")
         print("PASS: closed/tab-switched Hermes requests continue, reopen restores progress, idle expiry waits for completion, hidden lock cancels, five complete context pairs, images excluded from history")
@@ -310,13 +318,15 @@ private actor SubmissionClient: HermesStreaming {
         let source = StagedAttachment(url: file, temporary: false)
         let picture = StagedAttachment(url: image, temporary: false)
         var snapshots = 0
-        let store = HermesStore(client: client, shelfAttachments: { excluded in
+        let store = HermesStore(client: client, shelfAttachments: { included in
             snapshots += 1
-            return [source, picture].filter { !excluded.contains($0.id) }
+            return [source, picture].filter { included.contains($0.id) }
         })
         SurfaceAccess.shared.hasFile = true
         defer { store.clear(); SurfaceAccess.shared.hasFile = false; try? FileManager.default.removeItem(at: directory) }
         try require(store.includesNote, "Bound note is not included by default")
+        store.toggleShelfItem(source.id)
+        store.toggleShelfItem(picture.id)
         store.input = "依据便签和暂存区回答"
         store.send()
         try await eventually { await client.count == 1 }
@@ -333,8 +343,8 @@ private actor SubmissionClient: HermesStreaming {
         try await eventually { !store.isGenerating }
         try require(FileManager.default.fileExists(atPath: file.path), "Sending context deleted Shelf-owned source")
         store.includesNote = false
-        store.excludeShelfItem(source.id)
-        store.excludeShelfItem(picture.id)
+        store.toggleShelfItem(source.id)
+        store.toggleShelfItem(picture.id)
         store.input = "追问"
         store.send()
         try await eventually { await client.count == 2 }
@@ -344,7 +354,8 @@ private actor SubmissionClient: HermesStreaming {
         try await client.emit("第二答")
         await client.finish()
         try await eventually { !store.isGenerating }
-        store.includeShelfItems()
+        store.toggleShelfItem(source.id)
+        store.toggleShelfItem(picture.id)
         try Data("UPDATED-SHELF-CONTEXT".utf8).write(to: file, options: .atomic)
         store.input = "再读取"
         store.send()
@@ -360,6 +371,63 @@ private actor SubmissionClient: HermesStreaming {
         try require(await client.count == 3 && store.input == "文件失效保留草稿" && store.message != nil && snapshots == 4,
                     "Missing Shelf source was silently omitted or consumed the draft")
         print("PASS: serialized bound Markdown + Shelf text/image context; followup preserves attachment text; exclusions, fresh reads and failed preflight preserve source/draft")
+    }
+
+    @MainActor private static func explicitSelectionClipboardAndManualSave() async throws {
+        let client = SubmissionClient()
+        let missing = StagedAttachment(url: URL(fileURLWithPath: "/fixture-not-selected.txt"), temporary: false)
+        let payload = ClipboardPayload(items: [.init(representations: [
+            .init(type: UTType.utf8PlainText.identifier, data: Data("CLIPBOARD-EXPLICIT-TEXT".utf8))
+        ])])
+        let store = HermesStore(client: client, shelfAttachments: { included in
+            included.contains(missing.id) ? [missing] : []
+        }, clipboardPayload: { _ in payload })
+        SurfaceAccess.shared.hasFile = true
+        let saved = SurfaceAccess.shared.appendCount
+        defer { store.clear(); SurfaceAccess.shared.hasFile = false }
+        store.includesNote = false
+        store.input = "无附件"
+        store.send()
+        try await eventually { await client.count == 1 }
+        try require(await client.requests[0].last?.parts[0].text == "无附件" && store.selectedShelfIDs.isEmpty,
+                    "Unselected Shelf file or disabled Markdown was sent")
+        try await client.emit("第一答")
+        await client.finish()
+        try await eventually { !store.isGenerating }
+        try require(SurfaceAccess.shared.appendCount == saved, "Completion automatically wrote to Markdown")
+        store.stageClipboard("explicit-fixture-id")
+        try await eventually { !store.isPreparingDrop }
+        try require(store.attachments.count == 1 && store.attachments[0].displayName == "剪贴板文本", "Explicit clipboard selection did not create a chip")
+        let source = store.attachments[0].url
+        try require(await client.count == 1, "Selecting clipboard content sent an unsolicited request")
+        store.input = "分析剪贴板"
+        store.send()
+        try await eventually { await client.count == 2 }
+        try require(await client.requests[1].last?.parts[0].text?.contains("CLIPBOARD-EXPLICIT-TEXT") == true,
+                    "Clipboard text was not included in the request")
+        try await client.emit("只能手动保存的回复")
+        await client.finish()
+        try await eventually { !store.isGenerating }
+        try require(!FileManager.default.fileExists(atPath: source.path), "Clipboard attachment temp file leaked after success")
+        try require(SurfaceAccess.shared.appendCount == saved, "Clipboard completion automatically wrote to Markdown")
+        store.saveAnswer()
+        try await eventually { !store.isSaving }
+        try require(SurfaceAccess.shared.appendCount == saved + 1 && SurfaceAccess.shared.lastSaved == "只能手动保存的回复",
+                    "Explicit save did not write exactly once")
+        // Image bytes become a temporary URL, never a system pasteboard write or full NSImage.
+        let bitmap = CGContext(data: nil, width: 8, height: 8, bitsPerComponent: 8, bytesPerRow: 0,
+                               space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
+        let data = NSMutableData()
+        let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil)!
+        CGImageDestinationAddImage(destination, bitmap.makeImage()!, nil)
+        try require(CGImageDestinationFinalize(destination), "Clipboard PNG fixture failed")
+        let images = try HermesClipboardContext.files(from: .init(items: [.init(representations: [
+            .init(type: UTType.png.identifier, data: data as Data)
+        ])]), maximumCount: 1)
+        defer { for item in images { try? FileManager.default.removeItem(at: item.url) } }
+        try require(images.count == 1 && images[0].displayName == "剪贴板图片" && !(try AttachmentImage.jpeg(at: images[0].url)).isEmpty,
+                    "Clipboard image bytes did not survive attachment staging")
+        print("PASS: explicit Shelf selection; input note switch; clipboard text/image staging; no implicit send or Markdown write; one manual save")
     }
 
     @MainActor private static func fiveRoundContextAndImages() async throws {

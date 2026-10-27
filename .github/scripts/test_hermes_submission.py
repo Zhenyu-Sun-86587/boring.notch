@@ -20,6 +20,7 @@ def main() -> None:
         sources = project / "Sources/HermesSubmissionChecks"
         sources.mkdir(parents=True)
         shutil.copy2(root / "boringNotch/Hermes/HermesStore.swift", sources / "HermesStore.swift")
+        shutil.copy2(root / "boringNotch/Hermes/HermesClipboardContext.swift", sources / "HermesClipboardContext.swift")
         shutil.copy2(root / ".github/scripts/HermesSubmissionChecks.swift", sources / "SubmissionChecks.swift")
         package = '''// swift-tools-version: 6.0
 import PackageDescription

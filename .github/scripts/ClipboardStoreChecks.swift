@@ -53,6 +53,13 @@ private struct Failure: Error { let reason: String }
         let record = try await history.insert(payload, title: "fixture", searchableText: "fixture", kind: .text,
             sourceBundleID: nil, sourceName: nil).first!
         let store = ClipboardStore(history: history, pasteboard: board, defaults: defaults, notifications: notifications)
+        store.start()
+        let deadline = ContinuousClock.now + .seconds(3)
+        while store.records.isEmpty && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        let beforeContextRead = board.changeCount
+        let context = try await store.contextPayload(id: record.id)
+        try check(context == payload && board.changeCount == beforeContextRead && recorder.requests.isEmpty,
+                  "Explicit context read changed clipboard or invoked paste")
         store.copy(record, paste: true)
         try await settle(store)
         try check(recorder.requests.count == 1 && recorder.copiedBeforeRequest, "copy finishes before any paste/target/permission handling")
