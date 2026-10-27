@@ -19,7 +19,7 @@ struct ClipboardDrawer: View {
                 TextField("搜索剪贴板", text: $store.search)
                     .textFieldStyle(.plain)
                     .focused($searchFocused)
-                    .background(InteractionInputProbe(region: "clipboard.search"))
+                    .background(IslandInputInteraction(region: "clipboard.search"))
                     .onKeyPress(.downArrow, phases: [.down, .repeat]) { handle(.down, press: $0) }
                     .onKeyPress(.upArrow, phases: [.down, .repeat]) { handle(.up, press: $0) }
                     .onKeyPress(.return, phases: .down) { handle(.enter, press: $0) }

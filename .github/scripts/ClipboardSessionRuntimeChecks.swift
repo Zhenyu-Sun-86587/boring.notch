@@ -43,7 +43,7 @@ import IslandCore
   func yieldActivation(to: FixtureRunningApplication) {}
 }
 enum FixtureEvent {
-  static var mouseLocation = CGPoint.zero
+  static var mouseLocation = CGPoint(x: -999999, y: -999999)
   static func addGlobalMonitorForEvents(
     matching: NSEvent.EventTypeMask, handler: @escaping (NSEvent) -> Void
   ) -> Any? { UUID() }
@@ -83,14 +83,17 @@ enum NotchViews { case home, hermes, clipboard }
 class BoringNotchSkyLightWindow: NSPanel {
   var allowsIslandKeyboard = false
   var isIslandKeyboardHandoffActive = false
+  var releases = 0
+  var prolongedHides = 0
   func beginIslandKeyboardHandoff() -> UUID {
+    prolongedHides += 1
     isIslandKeyboardHandoffActive = true
     return UUID()
   }
   func endIslandKeyboardHandoff(_ token: UUID, restoreVisible: Bool) {
     isIslandKeyboardHandoffActive = false
   }
-  func releaseIslandKeyboard() {}
+  func releaseIslandKeyboard() { releases += 1 }
 }
 @MainActor enum FixtureStore { static var shared: ClipboardStore! }
 @MainActor final class ClipboardPermissionController {
@@ -167,6 +170,10 @@ let openNotchSize = CGSize(width: 640, height: 190)
     let manager = NotchWindowManager()
     let presentation = ClipboardPresentation()
     presentation.configure(windowManager: manager)
+    let panel = BoringNotchSkyLightWindow(contentRect: NSRect(x: 25000, y: 25000, width: 640, height: 440), styleMask: [.borderless], backing: .buffered, defer: false)
+    panel.isReleasedWhenClosed = false
+    manager.primaryWindow = panel
+    defer { panel.close() }
     let owner = UUID()
     manager.primaryViewModel.didClose = {
       presentation.updateKeyboardTargetVisibility(owner: owner, visible: false)
@@ -177,7 +184,7 @@ let openNotchSize = CGSize(width: 640, height: 190)
       backing: .buffered, defer: false)
     for mode in [
       "hover-after-settings", "keyboard", "hover", "hover-new-editor", "active-own-editor",
-      "pending-own-editor", "nonactivating-resign", "hidden-owner", "handoff-visible-update", "repeat-hover-1", "repeat-hover-2",
+      "pending-own-editor", "nonactivating-resign", "hidden-owner", "handoff-visible-update", "repeat-hover-1", "repeat-hover-2", "late-hover",
     ] {
       FixtureWorkspace.shared.frontmostApplication = target
       BoringViewCoordinator.shared.currentView = .clipboard
@@ -198,7 +205,12 @@ let openNotchSize = CGSize(width: 640, height: 190)
       }
       if mode == "keyboard" { presentation.beginKeyboardSession(on: manager.primaryViewModel) }
       presentation.updateKeyboardTargetVisibility(owner: owner, visible: true)
+      presentation.pointerChanged(mode != "late-hover", on: "fixture")
       presentation.updateVisibility(owner: owner, screenUUID: "fixture", visible: true)
+      if mode == "late-hover" {
+        require(!presentation.sessionPresented, "Drawer claimed mouse ownership before its own hover")
+        presentation.pointerChanged(true, on: "fixture")
+      }
       await ready { presentation.keyboardTargetReady }
       let openedSession = FixtureStore.shared.sessionID
       if mode == "nonactivating-resign" {
@@ -213,6 +225,7 @@ let openNotchSize = CGSize(width: 640, height: 190)
       }
       if mode == "handoff-visible-update" {
         XPCHelperClient.shared.duringPaste = {
+          presentation.pointerChanged(true, on: "fixture")
           presentation.updateVisibility(owner: owner, screenUUID: "fixture", visible: true)
           presentation.updateVisibility(owner: owner, screenUUID: "fixture", visible: false)
         }
@@ -258,6 +271,8 @@ let openNotchSize = CGSize(width: 640, height: 190)
           XPCHelperClient.shared.destinations.last == (mode == "hover-new-editor" ? 200 : 100),
           "\(mode): stale editor was retained")
       }
+      require(panel.prolongedHides == 0 && !panel.isIslandKeyboardHandoffActive,
+        "\(mode): paste hid the panel across async helper work")
       require(board.string(forType: .string) == "fixture", "\(mode): fallback payload missing")
       require(
         FixtureStore.shared.sessionID != session && !FixtureStore.shared.keyboardSessionActive,
@@ -266,6 +281,7 @@ let openNotchSize = CGSize(width: 640, height: 190)
         "PASS runtime clipboard session:", mode, "submissions",
         XPCHelperClient.shared.pastes - prior)
     }
+    print("PASS pointer-entry regression: stale global pointer ignored; actual hover opens sessions; no hidden panel across async paste")
     print(
       "PASS production Store+Presentation runtime: fresh pointer/keyboard destinations, settings re-entry, stale Hermes editor refresh, active own-editor cancellation, copy-first fallback and unified close; passive OS adapters only"
     )

@@ -28,7 +28,6 @@ final class ClipboardPresentation: ObservableObject {
     private var targetRelease: DispatchWorkItem?
     private var pasteTask: Task<Void, Never>?
     private var pasteActionID: UUID?
-    private var suspendedPanels: [(BoringNotchSkyLightWindow, UUID)] = []
     private var keyboardPointerEntered = false
     private var pointerScreens = Set<String>()
     private var outsideClickMonitor: Any?
@@ -225,6 +224,9 @@ final class ClipboardPresentation: ObservableObject {
             if hovering { pointerScreens.insert(screenUUID) }
             else { pointerScreens.remove(screenUUID) }
         }
+        if hovering, let screenUUID {
+            for (owner, screen) in visibility.visibleOwners where screen == screenUUID { captureMouseTarget(owner: owner) }
+        }
         if hovering, ClipboardStore.shared.keyboardSessionActive, keyboardScreenUUID == screenUUID {
             keyboardPointerEntered = true
         }
@@ -337,10 +339,10 @@ final class ClipboardPresentation: ObservableObject {
     }
 
     private func captureMouseTarget(owner: UUID) {
-        tracePaste("pointer-entry", "owner=\(owner) keyboard=\(ClipboardStore.shared.keyboardSessionActive) mouseOwner=\(visibility.mouseOwner?.uuidString ?? "nil")")
+        tracePaste("pointer-entry", "owner=\(owner) keyboard=\(ClipboardStore.shared.keyboardSessionActive) pointerScreens=\(pointerScreens.count) mouseOwner=\(visibility.mouseOwner?.uuidString ?? "nil")")
         guard pasteActionID == nil, !ClipboardStore.shared.keyboardSessionActive,
               let screen = visibility.visibleOwners[owner],
-              NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })?.displayUUID == screen,
+              pointerScreens.contains(screen),
               visibility.claimMouse(owner: owner) else { return }
         prepareNewSessionTarget()
         sessionPresented = true
@@ -412,6 +414,10 @@ final class ClipboardPresentation: ObservableObject {
         guard sessionPresented, sessionID == ClipboardStore.shared.sessionID.uuidString,
               pasteActionID == nil, let sessionID, let changeCount else {
             tracePaste("selection-rejected", "presented=\(sessionPresented) currentSession=\(sessionID == ClipboardStore.shared.sessionID.uuidString) pending=\(pasteActionID != nil)")
+            if let sessionID, pasteActionID == nil, sessionID == ClipboardStore.shared.sessionID.uuidString {
+                ClipboardStore.shared.finishPaste(sessionID: sessionID)
+                ClipboardPermissionController.shared.explainPasteFailure(.focusUnavailable)
+            }
             return
         }
         // The pasteboard is already populated. A missing/expired helper snapshot only
@@ -423,8 +429,9 @@ final class ClipboardPresentation: ObservableObject {
         let hostPID = ProcessInfo.processInfo.processIdentifier
         let actionID = UUID()
         pasteActionID = actionID
-        let panels = notchPanels
-        suspendedPanels = panels.map { ($0, $0.beginIslandKeyboardHandoff()) }
+        // closeDrawers uses the same synchronous release as ordinary closing. The
+        // panel must stay visible while its shell shrinks; helper readiness is checked
+        // independently below, without hiding the animation for the XPC round trip.
         clearSession()
         closeDrawers()
         pasteTask = Task { @MainActor in
@@ -507,7 +514,6 @@ final class ClipboardPresentation: ObservableObject {
         pasteActionID = nil
         pasteTask?.cancel()
         pasteTask = nil
-        restorePanels()
         // A visibility update can arrive before endKeepingWindow(). Keep its
         // destination until that unified close has had a chance to return focus.
         if keyboardOwners.isEmpty && !sessionPresented { endKeyboardTarget() }
@@ -517,17 +523,7 @@ final class ClipboardPresentation: ObservableObject {
         guard pasteActionID == actionID else { return }
         pasteActionID = nil
         pasteTask = nil
-        restorePanels()
         endKeyboardTarget()
-    }
-
-    private func restorePanels() {
-        let current = Set(notchPanels.map(ObjectIdentifier.init))
-        for (panel, token) in suspendedPanels {
-            panel.endIslandKeyboardHandoff(token, restoreVisible: current.contains(ObjectIdentifier(panel))
-                && windowManager?.isScreenLocked == false)
-        }
-        suspendedPanels = []
     }
 }
 

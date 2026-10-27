@@ -9,6 +9,7 @@ import SwiftUI
     static var viewport = CGRect.zero
 }
 extension Notification.Name { static let islandLocked = Notification.Name("fixture.locked") }
+@MainActor enum IslandWindowBridge { static func requestKeyboardFocus(in window: NSWindow) { fatalError("No input in offscreen fixture") } }
 enum NotchViews { case clipboard }
 @MainActor final class BoringViewCoordinator {
     static let shared = BoringViewCoordinator()

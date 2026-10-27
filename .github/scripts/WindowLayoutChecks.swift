@@ -203,18 +203,35 @@ extension NSScreen {
     try await pump([window])
     try check(window.focusRequests == 3 && window.isKeyWindow,
               "The global open-notch shortcut did not deliver its explicit window focus request")
+    // Actual hover delivery, not a second global pointer/screen lookup, admits this panel.
+    window.fixtureLosesKey()
+    old.receive(size: CGSize(width: 640, height: 440), wantsKeyboard: false, permitsKeyboardWithoutHover: false)
+    try await pump([window])
+    old.receive(size: CGSize(width: 640, height: 440), wantsKeyboard: true,
+                permitsKeyboardWithoutHover: false, keyboardActivation: "hover-entry", keyboardReady: false, pointerInside: true)
+    let beforeHover = window.focusRequests
+    try await pump([window])
+    try check(window.focusRequests == beforeHover, "Hover acquired focus before external target capture")
+    old.receive(size: CGSize(width: 640, height: 440), wantsKeyboard: true,
+                permitsKeyboardWithoutHover: false, keyboardActivation: "hover-entry", keyboardReady: true, pointerInside: true)
+    try await pump([window])
+    try check(window.focusRequests == beforeHover + 1 && window.isKeyWindow,
+        "Actual hover failed admission without a global pointer match")
+    print("PASS pointer focus admission: actual window hover after delayed target capture; no global pointer or application activation")
     let previousOwner = window.islandKeyboardOwner
     new.receive(size: CGSize(width: 640, height: 440), wantsKeyboard: true, permitsKeyboardWithoutHover: true)
     old.invalidate()
     try await pump([window])
     try check(window.islandKeyboardOwner != nil && window.islandKeyboardOwner != previousOwner
         && window.allowsIslandKeyboard, "Stale anchor revoked the current keyboard owner")
+    let beforeLockOut = window.orderOutRequests
+    let beforeLockFront = window.orderingRequests
     window.isIslandScreenLocked = true
     new.receive(size: CGSize(width: 640, height: 440), wantsKeyboard: true, permitsKeyboardWithoutHover: true)
     try await pump([window])
     try check(!window.allowsIslandKeyboard && !window.isKeyWindow && window.islandKeyboardOwner == nil,
               "Locked window retained keyboard ownership")
-    try check(window.resignRequests == 0 && window.orderOutRequests == 1 && window.orderingRequests == 0,
+    try check(window.resignRequests == 0 && window.orderOutRequests == beforeLockOut + 1 && window.orderingRequests == beforeLockFront,
               "Focus was not released through real ordering, or a notification was called directly")
 
     window.isIslandScreenLocked = false

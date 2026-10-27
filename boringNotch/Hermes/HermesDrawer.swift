@@ -69,7 +69,7 @@ struct HermesDrawer: View {
             HStack(alignment: .bottom, spacing: 10) {
                 TextField("输入消息…", text: $store.input, axis: .vertical)
                     .lineLimit(1...4).textFieldStyle(.plain).focused($inputFocused)
-                    .background(InteractionInputProbe(region: "hermes.prompt"))
+                    .background(IslandInputInteraction(region: "hermes.prompt"))
                     .onSubmit { store.send() }
                     .onKeyPress(.return, phases: .down) { key in
                         let composing = (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() ?? false

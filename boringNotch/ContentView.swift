@@ -35,6 +35,7 @@ struct ContentView: View {
     @State private var clipboardVisibilityOwner = UUID()
     @State private var hoverTask: Task<Void, Never>?
     @State private var isHovering: Bool = false
+    @State private var pointerInsideSurface = false
     @State private var anyDropDebounceTask: Task<Void, Never>?
 
     @State private var gestureProgress: CGFloat = .zero
@@ -308,7 +309,8 @@ struct ContentView: View {
                             wantsKeyboard: workspaceIsOpen,
                             permitsKeyboardWithoutHover: clipboard.keyboardSessionActive && clipboardPresentation.keyboardScreenUUID == vm.screenUUID,
                             keyboardActivation: coordinator.currentView == .clipboard ? clipboard.sessionID.uuidString : "hermes-\(vm.inputSessionID)",
-                            keyboardReady: clipboardPresentation.keyboardTargetReady)
+                            keyboardReady: clipboardPresentation.keyboardTargetReady,
+                            pointerInside: pointerInsideSurface)
                     })
                           .overlay(alignment: .top) {
                               displayClosedNotchHeight.isZero && vm.notchState == .closed ? nil
@@ -965,6 +967,7 @@ extension ContentView {
     }
 
     private func handleHover(_ hovering: Bool) {
+        pointerInsideSurface = hovering
         clipboardPresentation.pointerChanged(hovering, on: vm.screenUUID)
         if coordinator.firstLaunch { return }
         hoverTask?.cancel()

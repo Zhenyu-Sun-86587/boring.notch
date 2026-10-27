@@ -47,6 +47,7 @@ struct IslandWindowBridge: NSViewRepresentable {
     var permitsKeyboardWithoutHover = false
     var keyboardActivation: String?
     var keyboardReady = true
+    var pointerInside = false
 
     @MainActor
     final class Anchor: NSView, IslandInteractionRegionProviding {
@@ -56,6 +57,7 @@ struct IslandWindowBridge: NSViewRepresentable {
             let permitsKeyboardWithoutHover: Bool
             let keyboardActivation: String?
             let keyboardReady: Bool
+            let pointerInside: Bool
         }
         private let ownerID = UUID()
         private var request: Request?
@@ -72,24 +74,24 @@ struct IslandWindowBridge: NSViewRepresentable {
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
         func receive(size: CGSize, wantsKeyboard: Bool, permitsKeyboardWithoutHover: Bool,
-                     keyboardActivation: String? = nil, keyboardReady: Bool = true) {
+                     keyboardActivation: String? = nil, keyboardReady: Bool = true, pointerInside: Bool = false) {
             if !wantsKeyboard, request?.wantsKeyboard == true { explicitKeyboardEntry = false }
             if !wantsKeyboard || request?.wantsKeyboard != true
                 || request?.keyboardActivation != keyboardActivation {
                 attemptedKeyboardActivation = false
             }
             if InteractionDiagnostics.enabled {
-                let signature = "\(size)|\(wantsKeyboard)|\(keyboardReady)|\(keyboardActivation ?? "nil")"
+                let signature = "\(size)|\(wantsKeyboard)|\(keyboardReady)|\(pointerInside)|\(keyboardActivation ?? "nil")"
                 if signature != lastDiagnosticSignature {
                     lastDiagnosticSignature = signature
                     var fields = InteractionDiagnostics.windowFields(window)
-                    fields.merge(["activation": keyboardActivation ?? "nil", "wantsKeyboard": String(wantsKeyboard), "ready": String(keyboardReady), "width": String(describing: size.width), "height": String(describing: size.height), "owner": ownerID.uuidString]) { _, new in new }
+                    fields.merge(["activation": keyboardActivation ?? "nil", "wantsKeyboard": String(wantsKeyboard), "ready": String(keyboardReady), "width": String(describing: size.width), "height": String(describing: size.height), "owner": ownerID.uuidString, "current": String(pointerInside)]) { _, new in new }
                     InteractionDiagnostics.record("focus.bridge", "request", fields)
                 }
             }
             request = Request(size: size, wantsKeyboard: wantsKeyboard,
                               permitsKeyboardWithoutHover: permitsKeyboardWithoutHover,
-                              keyboardActivation: keyboardActivation, keyboardReady: keyboardReady)
+                              keyboardActivation: keyboardActivation, keyboardReady: keyboardReady, pointerInside: pointerInside)
             schedule()
         }
 
@@ -185,7 +187,7 @@ struct IslandWindowBridge: NSViewRepresentable {
                 // back from Settings, a permission alert or another app.
                 if !attemptedKeyboardActivation
                     && ((explicitKeyboardEntry && ProcessInfo.processInfo.systemUptime < explicitKeyboardDeadline)
-                        || request.permitsKeyboardWithoutHover || frame.contains(NSEvent.mouseLocation)) {
+                        || request.permitsKeyboardWithoutHover || request.pointerInside) {
                     attemptedKeyboardActivation = true
                     explicitKeyboardEntry = false
                     panel.islandKeyboardOwner = ownerID
@@ -194,7 +196,7 @@ struct IslandWindowBridge: NSViewRepresentable {
                     if !panel.isKeyWindow { panel.makeKey() }
                     InteractionDiagnostics.record("focus.bridge", "make-key-after", InteractionDiagnostics.windowFields(panel))
                 } else if !panel.isKeyWindow {
-                    InteractionDiagnostics.record("focus.bridge", "admission-skipped", ["attempted": String(attemptedKeyboardActivation), "explicit": String(explicitKeyboardEntry), "allowed": String(request.permitsKeyboardWithoutHover), "current": String(frame.contains(NSEvent.mouseLocation))])
+                    InteractionDiagnostics.record("focus.bridge", "admission-skipped", ["attempted": String(attemptedKeyboardActivation), "explicit": String(explicitKeyboardEntry), "allowed": String(request.permitsKeyboardWithoutHover), "current": String(request.pointerInside)])
                 }
             } else if panel.islandKeyboardOwner == ownerID || panel.islandKeyboardOwner == nil {
                 let previouslyOwnedFocus = panel.allowsIslandKeyboard
@@ -234,7 +236,7 @@ struct IslandWindowBridge: NSViewRepresentable {
     func updateNSView(_ view: Anchor, context: Context) {
         view.receive(size: size, wantsKeyboard: wantsKeyboard,
                      permitsKeyboardWithoutHover: permitsKeyboardWithoutHover,
-                     keyboardActivation: keyboardActivation, keyboardReady: keyboardReady)
+                     keyboardActivation: keyboardActivation, keyboardReady: keyboardReady, pointerInside: pointerInside)
     }
     static func dismantleNSView(_ view: Anchor, coordinator: ()) { view.invalidate() }
 }

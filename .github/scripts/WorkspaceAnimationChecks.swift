@@ -410,6 +410,18 @@ private struct WorkspaceRequestProbe: NSViewRepresentable {
     try requireWorkspace(abs(window.frame.width - 952) <= 1 && abs(window.frame.height - 572) <= 1,
         "Wide shell/window geometry diverged")
 
+    // Paste returns keyboard focus synchronously, leaving the shell ordered for the
+    // same closing spring. Async helper work must not hide/restore it halfway through.
+    window.releaseIslandKeyboard()
+    animateWorkspace(state, metrics: metrics, phase: "paste-close", size: CGSize(width: 193, height: 38))
+    try await workspaceTick(window, metrics: metrics, count: 48)
+    let pasteClosing = metrics.samples.filter { $0.phase == "paste-close" && $0.fromTick }.map(\.size.height)
+    try requireWorkspace(Set(pasteClosing.filter { $0 > 39 && $0 < 519 }.map { Int($0.rounded()) }).count >= 3,
+        "Paste closing skipped the visible spring: \(pasteClosing.prefix(16))")
+    animateWorkspace(state, metrics: metrics, phase: "reopen-before-reverse", size: CGSize(width: 920, height: 520),
+                     layout: CGSize(width: 920, height: 520), tab: 2)
+    try await workspaceTick(window, metrics: metrics, count: 48)
+
     animateWorkspace(state, metrics: metrics, phase: "close-reverse", size: CGSize(width: 193, height: 38))
     try await workspaceTick(window, metrics: metrics, count: 5)
     try requireWorkspace(window.frame.height > 350,
@@ -495,6 +507,7 @@ private struct WorkspaceRequestProbe: NSViewRepresentable {
     print("PASS ordered offscreen workspace animation: samples=\(metrics.samples.count), requests=\(metrics.requests.count), displayCycleLayouts=\(metrics.displayCycleLayouts), maxCenterError=\(centerError), maxTopError=\(topError), contentTopError=\(contentError)")
     print("Compact page sample boundary: \(metrics.intrinsicSamples.filter { $0.phase == "compact-height" }.prefix(4))")
     print("PASS composited native frames: \(metrics.renderedFrames) opaque-shell/ghost-shadow pixel checks, \(metrics.shadowFrames) shadow gradients, \(metrics.footerSamples) live footer positions; stable natural closed/compact measurements=\(closedIntrinsic.count + compactIntrinsic.count)")
+    print("PASS visible paste closing: synchronous key release, continuous intermediate sizes, no hidden frames during async handoff")
     print("PASS unified stable viewport: first open, wide, interrupted closing/reversal, Hermes/clipboard/home/notification/compact heights, no-animation, close; zero window writes and transparent hit-test pass-through")
     print("Native cacheDisplay snapshots are diagnostic composition samples, not a frame-rate or WindowServer visual-acceptance measurement; snapshot-induced layout changes=\(metrics.snapshotLayoutChanges)")
     print("After-run-loop tick native heights: \(native.prefix(14)); closing heights: \(closing.prefix(14))")

@@ -140,8 +140,9 @@ struct HermesInputFocusObserver: NSViewRepresentable {
     static func dismantleNSView(_ view: Anchor, coordinator: ()) { view.invalidate() }
 }
 
-/// Passive field-local click probe; never participates in hit testing or focus.
-struct InteractionInputProbe: NSViewRepresentable {
+/// A field-local primary click is an explicit request to focus this window.
+/// The bridge still waits for target capture and rejects closed/locked/competing UI.
+struct IslandInputInteraction: NSViewRepresentable {
     let region: String
     final class Probe: NSView {
         var region = ""
@@ -161,16 +162,19 @@ struct InteractionInputProbe: NSViewRepresentable {
         }
         private func updateMonitor() {
             if let monitor { NSEvent.removeMonitor(monitor) }; monitor = nil
-            guard window != nil, InteractionDiagnostics.enabled else { return }
+            guard window != nil else { return }
             monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) { [weak self] event in
                 MainActor.assumeIsolated {
                     guard let self, let window = self.window, event.window === window,
                           !self.isHiddenOrHasHiddenAncestor,
                           self.bounds.contains(self.convert(event.locationInWindow, from: nil)) else { return }
-                    var fields = InteractionDiagnostics.windowFields(window)
-                    fields["region"] = self.region; fields["event"] = String(event.type.rawValue)
-                    fields["eventNumber"] = String(event.eventNumber)
-                    InteractionDiagnostics.record("focus.field", "pointer-received", fields)
+                    if InteractionDiagnostics.enabled {
+                        var fields = InteractionDiagnostics.windowFields(window)
+                        fields["region"] = self.region; fields["event"] = String(event.type.rawValue)
+                        fields["eventNumber"] = String(event.eventNumber)
+                        InteractionDiagnostics.record("focus.field", "pointer-received", fields)
+                    }
+                    if event.type == .leftMouseDown { IslandWindowBridge.requestKeyboardFocus(in: window) }
                 }
                 return event
             }
