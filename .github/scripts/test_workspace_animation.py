@@ -34,6 +34,9 @@ def main():
         def no_core_dump():
             resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
         environment = dict(os.environ, NSUnbufferedIO="YES", BORING_WORKSPACE_FRAMES=str(root / "build/workspace-animation-frames"))
+        if os.environ.get("BORING_FIT_WINDOW") == "1":
+            report = root / "build/fitted-window-report.txt"
+            environment["BORING_WORKSPACE_FRAMES"] = str(root / "build/fitted-window-frames")
         with report.open("w") as output:
             result = subprocess.run([str(executable)], cwd=root, env=environment, stdout=output,
                                     stderr=subprocess.STDOUT, timeout=90, preexec_fn=no_core_dump)

@@ -42,6 +42,7 @@ struct IslandWindowBridge: NSViewRepresentable {
         NotificationCenter.default.post(name: keyboardRequest, object: window)
     }
 
+    @Environment(\.islandWindowViewport) private var viewport
     let size: CGSize
     let wantsKeyboard: Bool
     var permitsKeyboardWithoutHover = false
@@ -58,9 +59,11 @@ struct IslandWindowBridge: NSViewRepresentable {
             let keyboardActivation: String?
             let keyboardReady: Bool
             let pointerInside: Bool
+            let viewport: IslandWindowViewport?
         }
         private let ownerID = UUID()
         private var request: Request?
+        private var viewportOwner: IslandWindowViewport?
         private var generation: UInt = 0
         private var pending: DispatchWorkItem?
         private weak var previousWindow: NSWindow?
@@ -74,7 +77,7 @@ struct IslandWindowBridge: NSViewRepresentable {
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
         func receive(size: CGSize, wantsKeyboard: Bool, permitsKeyboardWithoutHover: Bool,
-                     keyboardActivation: String? = nil, keyboardReady: Bool = true, pointerInside: Bool = false) {
+                     keyboardActivation: String? = nil, keyboardReady: Bool = true, pointerInside: Bool = false, viewport: IslandWindowViewport? = nil) {
             if !wantsKeyboard, request?.wantsKeyboard == true { explicitKeyboardEntry = false }
             if !wantsKeyboard || request?.wantsKeyboard != true
                 || request?.keyboardActivation != keyboardActivation {
@@ -89,9 +92,10 @@ struct IslandWindowBridge: NSViewRepresentable {
                     InteractionDiagnostics.record("focus.bridge", "request", fields)
                 }
             }
+            if viewportOwner !== viewport { viewportOwner?.detach(window ?? previousWindow); viewportOwner = viewport }
             request = Request(size: size, wantsKeyboard: wantsKeyboard,
                               permitsKeyboardWithoutHover: permitsKeyboardWithoutHover,
-                              keyboardActivation: keyboardActivation, keyboardReady: keyboardReady, pointerInside: pointerInside)
+                              keyboardActivation: keyboardActivation, keyboardReady: keyboardReady, pointerInside: pointerInside, viewport: viewport)
             schedule()
         }
 
@@ -166,7 +170,8 @@ struct IslandWindowBridge: NSViewRepresentable {
             // Accept that half-point difference instead of repeatedly correcting it.
             let tolerance: CGFloat = 0.5
             let current = window.frame
-            if abs(current.minX - frame.minX) > tolerance || abs(current.minY - frame.minY) > tolerance
+            if let viewport = request.viewport { viewport.attach(window, viewport: request.size) }
+            else if abs(current.minX - frame.minX) > tolerance || abs(current.minY - frame.minY) > tolerance
                 || abs(current.width - frame.width) > tolerance || abs(current.height - frame.height) > tolerance {
                 // AppKit will schedule its normal display/layout pass. Never force a
                 // synchronous display while SwiftUI is updating its view hierarchy.
@@ -210,6 +215,7 @@ struct IslandWindowBridge: NSViewRepresentable {
             generation &+= 1
             pending?.cancel()
             pending = nil
+            viewportOwner?.detach(window ?? previousWindow); viewportOwner = nil
             request = nil
             explicitKeyboardEntry = false
             if let keyboardObserver { NotificationCenter.default.removeObserver(keyboardObserver) }
@@ -236,7 +242,7 @@ struct IslandWindowBridge: NSViewRepresentable {
     func updateNSView(_ view: Anchor, context: Context) {
         view.receive(size: size, wantsKeyboard: wantsKeyboard,
                      permitsKeyboardWithoutHover: permitsKeyboardWithoutHover,
-                     keyboardActivation: keyboardActivation, keyboardReady: keyboardReady, pointerInside: pointerInside)
+                     keyboardActivation: keyboardActivation, keyboardReady: keyboardReady, pointerInside: pointerInside, viewport: viewport)
     }
     static func dismantleNSView(_ view: Anchor, coordinator: ()) { view.invalidate() }
 }

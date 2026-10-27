@@ -198,10 +198,12 @@ final class NotchWindowManager {
             window.alphaValue = 0
         }
 
-        let viewport = IslandViewportLayout.size(screenUUID: screen.displayUUID)
-        let frame = NSRect(x: screen.frame.midX - viewport.width / 2,
-                           y: screen.frame.maxY - viewport.height,
-                           width: viewport.width, height: viewport.height)
+        // Frame ownership belongs to the surface lifecycle. Reposition the current native
+        // bounds without restoring the full transparent animation canvas on screen changes.
+        let size = window.frame.size
+        let frame = NSRect(x: screen.frame.midX - size.width / 2,
+                           y: screen.frame.maxY - size.height,
+                           width: size.width, height: size.height)
         if window.frame != frame { window.setFrame(frame, display: false) }
         window.alphaValue = 1
     }

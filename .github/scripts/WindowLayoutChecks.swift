@@ -566,10 +566,47 @@ private struct TabReplacementRoot: View {
     print("PASS production container: \(cycles) actual animated music/shelf/chat/clipboard replacements with nested horizontal/vertical scrolling")
 }
 
+@MainActor private func viewportFittingChecks() async throws {
+    let window = try panel()
+    defer { finish(window) }
+    let host = makeNotchHostingView(rootView: Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity))
+    window.contentView = host
+    let viewport = IslandWindowViewport()
+    let canvas = CGSize(width: 952, height: 572)
+    let first = viewport.begin(CGSize(width: 217, height: 58))
+    viewport.attach(window, viewport: canvas)
+    try await pump([window])
+    try checkSize(window, canvas, "Prepare animation canvas")
+    let latest = viewport.begin(CGSize(width: 664, height: 440))
+    viewport.complete(first)
+    try await pump([window])
+    try checkSize(window, canvas, "Ignore superseded spring completion")
+    viewport.complete(latest)
+    try await pump([window])
+    try checkSize(window, CGSize(width: 664, height: 440), "Fit settled native window")
+    try check(host.hostingView.frame.size == canvas, "Native frame resize changed the SwiftUI layout viewport")
+    let hosted = window.convertToScreen(host.hostingView.convert(host.hostingView.bounds, to: nil))
+    try check(abs(hosted.midX - window.frame.midX) <= 0.5 && abs(hosted.maxY - window.frame.maxY) <= 0.5,
+              "Native fit moved the hosting canvas away from the top center")
+    let closed = viewport.begin(CGSize(width: 217, height: 58))
+    try await pump([window])
+    viewport.complete(closed)
+    try await pump([window])
+    try checkSize(window, CGSize(width: 217, height: 58), "Close no longer exposes the wide transparent rectangle")
+    let before = window.frameWrites
+    let obsolete = viewport.begin(CGSize(width: 944, height: 540))
+    viewport.detach(window)
+    viewport.complete(obsolete)
+    try await pump([window])
+    try check(window.frameWrites == before, "Detached viewport applied a stale completion")
+    print("PASS native fitted bounds lifecycle: prepared canvas, latest spring only, fitted closed/open rectangles, constant hosted proposal and top center, detached callbacks ignored")
+}
+
 @MainActor private final class CheckDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         Task { @MainActor in
             do {
+                try await viewportFittingChecks()
                 try await requestChecks()
                 try await focusChecks()
                 try await handoffChecks()

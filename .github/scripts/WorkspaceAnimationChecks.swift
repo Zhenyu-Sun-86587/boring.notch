@@ -38,6 +38,7 @@ private struct WorkspaceAnimationFailure: Error, CustomStringConvertible { let d
         ignoresMouseEvents = true
         hidesOnDeactivate = false
         hasShadow = false
+        animationBehavior = .none
         appearance = NSAppearance(named: .darkAqua)
         title = "Boring Notch workspace animation isolated offscreen fixture"
     }
@@ -316,6 +317,8 @@ private struct WorkspaceRequestProbe: NSViewRepresentable {
                 metrics.measurementChanges += 1
             }
         }
+        .modifier(IslandFittedWindow(size: CGSize(width: state.target.width + 24, height: state.target.height + 20),
+            enabled: ProcessInfo.processInfo.environment["BORING_FIT_WINDOW"] == "1"))
         .coordinateSpace(name: "workspace-canvas")
         .onPreferenceChange(WorkspaceFrames.self) { frames in metrics.record(frames: frames) }
     }
@@ -378,6 +381,26 @@ private struct WorkspaceRequestProbe: NSViewRepresentable {
     }
 }
 
+@MainActor private func assertNativeBounds(_ window: BoringNotchSkyLightWindow, target: CGSize) async throws {
+    let fitted = ProcessInfo.processInfo.environment["BORING_FIT_WINDOW"] == "1"
+    let expected = fitted ? CGSize(width: target.width + 24, height: target.height + 20) : CGSize(width: 952, height: 572)
+    let deadline = ContinuousClock.now + .seconds(3)
+    while abs(window.frame.width - expected.width) > 1 || abs(window.frame.height - expected.height) > 1 {
+        if ContinuousClock.now >= deadline { break }
+        try await Task.sleep(for: .milliseconds(16))
+    }
+    try requireWorkspace(abs(window.frame.width - expected.width) <= 1 && abs(window.frame.height - expected.height) <= 1,
+                         "Native bounds failed to settle: expected=\(expected), actual=\(window.frame.size)")
+    if fitted {
+        try await Task.sleep(for: .milliseconds(40))
+        let cg = (CGWindowListCopyWindowInfo(.optionIncludingWindow, CGWindowID(window.windowNumber)) as? [[String: Any]])?.first
+        let bounds = cg?[kCGWindowBounds as String] as? [String: Any]
+        try requireWorkspace((bounds?["Width"] as? NSNumber)?.doubleValue == Double(window.frame.width)
+                             && (bounds?["Height"] as? NSNumber)?.doubleValue == Double(window.frame.height),
+                             "WindowServer still reports a stale transparent window: \(String(describing: bounds)), native=\(window.frame.size)")
+    }
+}
+
 @MainActor private func runWorkspaceChecks() async throws {
     let window = BoringNotchSkyLightWindow()
     let metrics = WorkspaceMetrics(); metrics.window = window
@@ -399,7 +422,7 @@ private struct WorkspaceRequestProbe: NSViewRepresentable {
     let opening = metrics.samples.filter { $0.phase == "open-hermes" }.map(\.size.height)
     try requireWorkspace(opening.filter { $0 > 75 && $0 < 425 }.count >= 4,
         "Visible shell jumped to final height instead of following presentation animation")
-    try requireWorkspace(abs(window.frame.height - 572) <= 1, "Expanded window changed its stable viewport")
+    try await assertNativeBounds(window, target: CGSize(width: 640, height: 420))
 
     animateWorkspace(state, metrics: metrics, phase: "clipboard-tab", size: CGSize(width: 640, height: 420),
                      layout: CGSize(width: 640, height: 420), tab: 3)
@@ -407,8 +430,7 @@ private struct WorkspaceRequestProbe: NSViewRepresentable {
     animateWorkspace(state, metrics: metrics, phase: "wide", size: CGSize(width: 920, height: 520),
                      layout: CGSize(width: 920, height: 520), tab: 2)
     try await workspaceTick(window, metrics: metrics, count: 40)
-    try requireWorkspace(abs(window.frame.width - 952) <= 1 && abs(window.frame.height - 572) <= 1,
-        "Wide shell/window geometry diverged")
+    try await assertNativeBounds(window, target: CGSize(width: 920, height: 520))
 
     // Paste returns keyboard focus synchronously, leaving the shell ordered for the
     // same closing spring. Async helper work must not hide/restore it halfway through.
@@ -429,7 +451,7 @@ private struct WorkspaceRequestProbe: NSViewRepresentable {
     animateWorkspace(state, metrics: metrics, phase: "reopen-reverse", size: CGSize(width: 640, height: 420),
                      layout: CGSize(width: 640, height: 420), tab: 3)
     try await workspaceTick(window, metrics: metrics, count: 48)
-    try requireWorkspace(abs(window.frame.height - 572) <= 1, "Reversal prematurely shrank the retained workspace viewport")
+    try await assertNativeBounds(window, target: CGSize(width: 640, height: 420))
 
     // Production releases before mutating the selected tab. Hiding a panel after the spring
     // starts lets SwiftUI cancel the in-flight presentation and jump to the new endpoint.
@@ -442,9 +464,9 @@ private struct WorkspaceRequestProbe: NSViewRepresentable {
     let native = metrics.samples.filter { $0.phase == "native-tab" && $0.fromTick }.map(\.size.height)
     try requireWorkspace(Set(native.filter { $0 > 191 && $0 < 419 }.map { Int($0.rounded()) }).count >= 3,
         "Native tab switch skipped continuous intermediate shell sizes: \(native.prefix(16))")
-    try requireWorkspace(abs(window.frame.height - 572) <= 1, "Native tab switch prematurely shrank the viewport")
+    try await assertNativeBounds(window, target: CGSize(width: 640, height: 190))
     try await workspaceTick(window, metrics: metrics, count: 10)
-    try requireWorkspace(abs(window.frame.height - 572) <= 1, "Native tab changed the stable viewport")
+    try await assertNativeBounds(window, target: CGSize(width: 640, height: 190))
 
     animateWorkspace(state, metrics: metrics, phase: "notification-height", size: CGSize(width: 640, height: 132), tab: 0)
     try await workspaceTick(window, metrics: metrics, count: 40)
@@ -470,7 +492,7 @@ private struct WorkspaceRequestProbe: NSViewRepresentable {
     let lastSamples = metrics.samples.suffix(5).map { "\($0.phase):\($0.size)" }
     try requireWorkspace(abs(closed.width - 193) <= 1 && abs(closed.height - 38) <= 1,
         "Closed presentation did not finish at the notch top: actual=\(closed), target=\(state.target), last=\(lastSamples)")
-    try requireWorkspace(abs(window.frame.height - 572) <= 1, "Closing changed the stable viewport")
+    try await assertNativeBounds(window, target: CGSize(width: 193, height: 38))
     let settled = window.frameWrites
     let settledMeasurements = metrics.measurementChanges
     try await workspaceTick(window, metrics: metrics, count: 16)
@@ -497,9 +519,11 @@ private struct WorkspaceRequestProbe: NSViewRepresentable {
     let contentError = metrics.samples.map(\.contentTopError).max() ?? .infinity
     try requireWorkspace(centerError <= 1 && topError <= 1, "Shell left the top-center origin: center=\(centerError), top=\(topError)")
     try requireWorkspace(contentError <= 1, "Content entered from below its shell: top error=\(contentError)")
-    try requireWorkspace(metrics.samples.allSatisfy { $0.canvasSize.width + 1 >= $0.size.width && $0.canvasSize.height + 1 >= $0.size.height + 20 }, "Visible shell exceeded the prepared viewport")
+    let clipped = metrics.samples.filter { $0.canvasSize.width + 1 < $0.size.width || $0.canvasSize.height + 1 < $0.size.height + 20 }
+    try requireWorkspace(clipped.isEmpty, "Visible shell exceeded the prepared viewport: \(clipped.prefix(12))")
     try requireWorkspace(window.automaticFrames == 0 && window.focusRequests == 0, "Hosting view took over window frames or focus")
-    try requireWorkspace(window.frameWrites == 0 && metrics.renderedFrames >= 30 && metrics.shadowFrames > 0 && metrics.footerSamples >= 8,
+    let fittedMode = ProcessInfo.processInfo.environment["BORING_FIT_WINDOW"] == "1"
+    try requireWorkspace((fittedMode ? window.frameWrites > 5 : window.frameWrites == 0) && metrics.renderedFrames >= 30 && metrics.shadowFrames > 0 && metrics.footerSamples >= 8,
         "Missing stable-window/composited rendering evidence: writes=\(window.frameWrites), rendered=\(metrics.renderedFrames), shadows=\(metrics.shadowFrames), footer=\(metrics.footerSamples)")
     let empty = NSPoint(x: 4, y: 4)
     try requireWorkspace(container.hitTest(empty) == nil, "Transparent stable viewport captured pointer/drop input")
@@ -508,7 +532,11 @@ private struct WorkspaceRequestProbe: NSViewRepresentable {
     print("Compact page sample boundary: \(metrics.intrinsicSamples.filter { $0.phase == "compact-height" }.prefix(4))")
     print("PASS composited native frames: \(metrics.renderedFrames) opaque-shell/ghost-shadow pixel checks, \(metrics.shadowFrames) shadow gradients, \(metrics.footerSamples) live footer positions; stable natural closed/compact measurements=\(closedIntrinsic.count + compactIntrinsic.count)")
     print("PASS visible paste closing: synchronous key release, continuous intermediate sizes, no hidden frames during async handoff")
-    print("PASS unified stable viewport: first open, wide, interrupted closing/reversal, Hermes/clipboard/home/notification/compact heights, no-animation, close; zero window writes and transparent hit-test pass-through")
+    if fittedMode {
+        try requireWorkspace(container.hostingView.frame.size == CGSize(width: 952, height: 572), "Internal animation viewport changed with native bounds")
+        print("PASS fitted WindowServer bounds: closed 217x58, actual CGWindow metadata, constant internal 952x572 viewport, continuous spring and no stale bounds after reversal")
+    }
+    print("PASS unified stable viewport: first open, wide, interrupted closing/reversal, Hermes/clipboard/home/notification/compact heights, no-animation, close; " + (fittedMode ? "constant hosted proposal, native fitted bounds" : "zero window writes") + " and transparent hit-test pass-through")
     print("Native cacheDisplay snapshots are diagnostic composition samples, not a frame-rate or WindowServer visual-acceptance measurement; snapshot-induced layout changes=\(metrics.snapshotLayoutChanges)")
     print("After-run-loop tick native heights: \(native.prefix(14)); closing heights: \(closing.prefix(14))")
     fflush(stdout)

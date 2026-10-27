@@ -476,6 +476,8 @@ struct ContentView: View {
                 }
             }
         }
+        .modifier(IslandFittedWindow(size: CGSize(width: workspaceSurfaceTarget.width * gestureScale + 24,
+            height: workspaceSurfaceTarget.height * gestureScale + max(shadowPadding, vm.chinHeight + 8))))
     }
 
     private func syncClipboardVisibility() {
