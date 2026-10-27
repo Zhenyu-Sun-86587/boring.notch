@@ -4,6 +4,7 @@ enum ClipboardPasteResult: String, Sendable {
     case posted, cancelled, unauthorized, targetUnavailable, focusChanged
     case focusUnavailable, inputHeld, clipboardChanged, screenLocked, eventFailure
     case postEventUnauthorized, snapshotUnavailable
+    case sessionUnavailable
 }
 
 /// Snapshot only: no clipboard contents or accessibility element text is retained.
@@ -11,6 +12,7 @@ struct ClipboardPasteObservation: Sendable {
     var authorized = true
     var postEventAuthorized = true
     var unlocked = true
+    var sessionAvailable = true
     var targetAlive = true
     var clipboardUnchanged = true
     var originalTargetUnchanged = true
@@ -75,6 +77,7 @@ final class ClipboardPasteCoordinator {
             let observation = environment.observe()
             guard observation.authorized else { return .unauthorized }
             guard observation.postEventAuthorized else { return .postEventUnauthorized }
+            guard observation.sessionAvailable else { return .sessionUnavailable }
             guard observation.unlocked else { return .screenLocked }
             guard observation.targetAlive else { return .targetUnavailable }
             guard observation.clipboardUnchanged else { return .clipboardChanged }

@@ -4,7 +4,7 @@
 
 ## 参考实现
 
-- [Maccy Clipboard.swift（7c1644b）](https://github.com/p0deje/Maccy/blob/7c1644bfbed1dd0d703ecdbaf4a1b9a3a1d0b295/Maccy/Clipboard.swift#L122-L148)：通过 `combinedSessionState` 构造快捷键，发到 `cgSessionEventTap`。其 [History 动作](https://github.com/p0deje/Maccy/blob/7c1644bfbed1dd0d703ecdbaf4a1b9a3a1d0b295/Maccy/Observables/History.swift#L354-L372)先关闭非激活面板，再复制、粘贴。
+- [Maccy 2.8.0 Clipboard.swift](https://github.com/p0deje/Maccy/blob/2.8.0/Maccy/Clipboard.swift#L113-L135)：在 GUI 进程中构造 `combinedSessionState` 事件源，设置本地事件抑制过滤，发送单对 ⌘V 到 `cgSessionEventTap`。[History.select](https://github.com/p0deje/Maccy/blob/2.8.0/Maccy/Observables/History.swift#L324-L354)先关闭面板，再复制、粘贴；[FloatingPanel](https://github.com/p0deje/Maccy/blob/2.8.0/Maccy/FloatingPanel.swift#L20-L35)使用非激活面板和 `animationBehavior = .none`。本项目保留 XPC 辅助进程，但必须让它加入同一个 GUI 登录会话。
 - [Clipy PasteService（e68ccf4）](https://github.com/Clipy/Clipy/blob/e68ccf48cefec2fd77d1cec48c5ea079fbf60858/Clipy/Sources/Services/PasteService.swift#L128-L154)：先检查辅助功能权限，再异步发送一对快捷键到 annotated session tap。
 - [CopyQ macplatformwindow（d39e44c）](https://github.com/hluk/CopyQ/blob/d39e44c3853a8aa05a77073e3d8e48d29cddb043/src/platform/mac/macplatformwindow.mm#L120-L143)：让出运行循环，等待目标窗口恢复焦点，再发送快捷键。
 - [Copyosity paste.rs（aad3c2b）](https://github.com/vakovalskii/copyosity/blob/aad3c2bd6c6a4fd9fdedc935ab019f8a4bb1fdcc/src-tauri/src/clipboard_macos/paste.rs#L147-L158)：目标位于前台时使用 session tap；源码记录部分原生应用忽略 `postToPid`，同时发送多个 tap 会造成重复粘贴。其[目标记忆](https://github.com/vakovalskii/copyosity/blob/aad3c2bd6c6a4fd9fdedc935ab019f8a4bb1fdcc/src-tauri/src/clipboard_macos/mod.rs#L273-L340)在自身面板获取焦点前保存外部应用，并记录最近的外部激活应用。
@@ -37,10 +37,23 @@ AX 快照是可选增强：有快照时核对并恢复原窗口/控件，缺失�
 
 同一组行为检查对旧源码失败：原源码在“设置关闭后鼠标进入”提交 0 次，只有窗口监听修复时又在“切换外部编辑器后鼠标进入”失败。完整修改后，两种入口均提交到正确的模拟编辑器；会话期间设置窗口取得焦点仍取消，等待权限检查期间取得焦点也取消且不产生迟到反馈。每种情况都检查已写入的回退载荷和面板会话关闭。
 
-`--clipboard-diagnostics` 仅用于受控排查：提供与全局快捷键共用的原生菜单入口，并把阶段、请求编号、进程编号和布尔结果异步写入应用缓存的 `ClipboardDiagnostics/paste-stages.log`，超过 128 KiB 时清空后继续。正常启动不显示入口、不写日志；日志不包含剪贴板正文、AX 值、窗口标题或输入内容。
+`--clipboard-diagnostics` 仅用于受控排查：把阶段、请求编号、进程编号和布尔结果异步写入应用缓存的 `ClipboardDiagnostics/paste-stages.log`，超过 128 KiB 时清空后继续。正常启动不写日志；日志不包含剪贴板正文、AX 值、窗口标题或输入内容。
+
+## 实机日志确认的阻断：XPC 登录会话（2026-10-27）
+
+安装版 9642159 的真实操作日志中，辅助进程已经有 AX 与 PostEvent 权限，也捕获了 Edge 目标与窗口/元素，但连续三次在 `screenLocked` 提前结束，根本未投递 ⌘V。旧代码把 `CGSessionCopyCurrentDictionary() == nil` 等同于锁屏。
+
+Apple 的 [CGSessionCopyCurrentDictionary 文档](https://developer.apple.com/documentation/coregraphics/cgsessioncopycurrentdictionary())说明，调用进程不在 Quartz GUI 会话时会返回 NULL。系统自带 `man 5 xpcservice.plist` 的 `JoinExistingSession` 条目说明：XPC 服务默认创建独立 audit session；设置 true 才加入客户端会话。因此“没有 GUI 会话”和“屏幕已锁定”必须分开。
+
+原生 XPC 对照测试使用同一个沙盒宿主和同一个服务程序，只改变服务配置：默认独立会话拿不到 Quartz 会话；`JoinExistingSession=true` 能拿到。修改前，生产 Info.plist 对照项也失败；修改后，生产配置与显式加入组均通过。测试不打开窗口、不读取剪贴板或用户输入、不发送按键。
+
+针对性修改是服务的 `XPCService.JoinExistingSession=true`，并将缺失会话改成单独的 `sessionUnavailable` 错误：仍禁止投递，但可显示原因。真正锁屏继续取消。沿用 Maccy 的非激活面板、关闭后交接和单次 session 事件，并补齐其本地事件抑制过滤配置；没有增加重复按键或轮流尝试多个 tap。
+
+启动检查现在查询实际打包 helper 的 GUI 会话是否可用，原生 XPC 测试直接加载生产 Info.plist，防止再次只检查权限与 IPC 连通便判定链路可用。Maccy 参考部分的 MIT 署名收录于 `THIRD_PARTY_LICENSES`。
 
 ## 验证范围
 
+- `test_clipboard_gui_session.py` 对照默认、显式加入和生产三种 XPC 配置，验证真实 GUI 会话可用性；不发送输入。
 - `test_clipboard_native_event.py` 的记录器检查生产事件构造与单一路由。其原生部分只向测试进程自身或 XPC 客户端 PID 投递带标记的事件并立即消费；这些测试不能证明生产 session 路由已被真实编辑器接受。
 - `test_clipboard_store.py` 编译运行真实 `ClipboardStore.copy`，只使用临时 history 和独立私有 pasteboard，覆盖原始文本、富文本、图片、文件字节、失败、取消和并发复制。失败 write 的注入不证明系统清空后实际写入失败时能保留旧剪贴板。
 - `test_clipboard_session_runtime.py` 执行生产 Store/Presentation 方法，仅在临时源码副本中替换 OS 单例/类型名称。应用、工作区和输入事件由被动适配器提供，设置窗口保持隐藏，操作私有 pasteboard。它验证会话状态管理，不会激活真实应用、读取用户输入、发送按键或请求权限。

@@ -36,6 +36,8 @@ import AppKit
             print("PASS production helper early guards: no clipboard/focus/event access")
             remote.access { data in
                 guard let access = try? JSONDecoder().decode(ClipboardPasteAccess.self, from: data) else { print("FAIL helper access decoding"); exit(2) }
+                guard access.guiSessionAvailable == true else { print("FAIL shipping helper did not join GUI session"); exit(2) }
+                print("PASS production helper GUI session available")
                 print("Native XPC helper access: AX=\(access.accessibility) postEvents=\(access.postEvents) helperPID=\(access.processIdentifier)")
                 guard access.postEvents else { print("SKIP isolated XPC/PID fixture: no pre-existing event-post permission; never requested"); exit(0) }
                 remote.postFixture(marker) { success in

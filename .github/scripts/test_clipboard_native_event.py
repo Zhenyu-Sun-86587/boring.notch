@@ -55,7 +55,7 @@ with tempfile.TemporaryDirectory(prefix="boring-native-clipboard-") as temporary
         "CFBundlePackageType": "APPL", "CFBundleVersion": "1", "LSUIElement": True})
     plist(helper / "Contents/Info.plist", {"CFBundleIdentifier": identifier + ".Helper",
         "CFBundleExecutable": "ClipboardNativeFixtureHelper", "CFBundlePackageType": "XPC!", "CFBundleVersion": "1",
-        "XPCService": {"ServiceType": "Application"}})
+        "XPCService": plistlib.loads((root / "BoringNotchXPCHelper/Info.plist").read_bytes())["XPCService"]})
     protocol = root / ".github/scripts/ClipboardNativeXPCProtocol.swift"
     run(compiler + ["-module-name", "ClipboardNativeFixture", protocol,
         root / "Shared/ClipboardPasteAccess.swift", root / ".github/scripts/ClipboardNativeXPCChecks.swift",

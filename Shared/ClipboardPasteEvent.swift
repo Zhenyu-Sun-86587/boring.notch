@@ -37,8 +37,11 @@ enum ClipboardPasteEvent {
 
     /// Construction is separated from delivery so safe fixtures can inspect the real events.
     static func makeEvents(marker: Int64 = 0) -> [CGEvent]? {
-        guard let source = CGEventSource(stateID: .combinedSessionState),
-              let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
+        guard let source = CGEventSource(stateID: .combinedSessionState) else { return nil }
+        // Match Maccy 2.8.0 / Clipy: avoid interleaving local shortcut keys with Cmd+V.
+        source.setLocalEventsFilterDuringSuppressionState([.permitLocalMouseEvents, .permitSystemDefinedEvents],
+            state: .eventSuppressionStateSuppressionInterval)
+        guard let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
               let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else { return nil }
         let command = CGEventFlags(rawValue: CGEventFlags.maskCommand.rawValue | 0x000008)
         for event in [down, up] {

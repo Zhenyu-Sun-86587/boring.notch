@@ -58,6 +58,11 @@ jobs:
           python3 .github/scripts/test_clipboard_session_runtime.py 2>&1 | tee build/clipboard-session-runtime-report.txt
       - name: Verify native clipboard XPC and targeted event transport
         run: python3 .github/scripts/test_clipboard_native_event.py
+      - name: Verify shipping helper joins the GUI session
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/test_clipboard_gui_session.py 2>&1 | tee build/clipboard-gui-session-report.txt
       - name: Verify native window resizing without displaying UI
         shell: bash
         run: |
@@ -133,6 +138,7 @@ jobs:
             build/clipboard-store-report.txt
             build/clipboard-presentation-report.txt
             build/clipboard-session-runtime-report.txt
+            build/clipboard-gui-session-report.txt
             build/clipboard-alert-report.txt
             build/hermes-markdown-report.txt
             build/hermes-submission-report.txt
@@ -157,6 +163,7 @@ jobs:
             build/clipboard-store-report.txt
             build/clipboard-presentation-report.txt
             build/clipboard-session-runtime-report.txt
+            build/clipboard-gui-session-report.txt
             build/clipboard-alert-report.txt
             build/hermes-markdown-report.txt
             build/hermes-submission-report.txt

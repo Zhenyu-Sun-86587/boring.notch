@@ -224,6 +224,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     "helperAvailable": helperOK,
                     "clipboardPasteTransport": pasteTransport == .targetUnavailable,
                     "clipboardPostEventAuthorized": pasteAccess.map { $0.postEvents as Any } ?? NSNull(),
+                    "clipboardGUISessionAvailable": (pasteAccess?.guiSessionAvailable).map { $0 as Any } ?? NSNull(),
                     "clipboardHelperPID": pasteAccess.map { $0.processIdentifier as Any } ?? NSNull(),
                     "calendarUsage": Bundle.main.object(forInfoDictionaryKey: "NSCalendarsFullAccessUsageDescription") as? String ?? "",
                     "reminderUsage": Bundle.main.object(forInfoDictionaryKey: "NSRemindersFullAccessUsageDescription") as? String ?? ""

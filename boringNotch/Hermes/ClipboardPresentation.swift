@@ -473,7 +473,7 @@ final class ClipboardPresentation: ObservableObject {
             // settings actions and must never interrupt copied-content fallback.
             stage = "permission"
             let access = await ClipboardPermissionController.shared.pasteAccessWithoutPrompt()
-            self.tracePaste("permission", "request=\(actionID) helper=\(access?.processIdentifier ?? -1) ax=\(access?.accessibility == true) post=\(access?.postEvents == true)")
+            self.tracePaste("permission", "request=\(actionID) helper=\(access?.processIdentifier ?? -1) ax=\(access?.accessibility == true) post=\(access?.postEvents == true) gui=\((access?.guiSessionAvailable).map { String($0) } ?? "unknown")")
             guard !Task.isCancelled, self.pasteActionID == actionID,
                   self.windowManager?.isScreenLocked == false else { return }
             guard let access else {
@@ -485,6 +485,10 @@ final class ClipboardPresentation: ObservableObject {
                 return
             }
             ClipboardStore.shared.setPasteAccessNeeded(false)
+            guard access.guiSessionAvailable != false else {
+                ClipboardPermissionController.shared.explainPasteFailure(.sessionUnavailable)
+                return
+            }
             stage = "panel-release"
             for _ in 0..<30 {
                 guard !Task.isCancelled, self.pasteActionID == actionID,

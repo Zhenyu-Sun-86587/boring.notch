@@ -62,7 +62,8 @@ class BoringNotchXPCHelper: NSObject, BoringNotchXPCHelperProtocol {
 
     @objc func clipboardPasteAccess(with reply: @escaping (Data) -> Void) {
         let access = ClipboardPasteAccess(accessibility: AXIsProcessTrusted(), postEvents: CGPreflightPostEventAccess(),
-            processIdentifier: ProcessInfo.processInfo.processIdentifier, bundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+            processIdentifier: ProcessInfo.processInfo.processIdentifier, bundleIdentifier: Bundle.main.bundleIdentifier ?? "",
+            guiSessionAvailable: CGSessionCopyCurrentDictionary() != nil)
         reply((try? JSONEncoder().encode(access)) ?? Data())
     }
 
@@ -140,7 +141,10 @@ class BoringNotchXPCHelper: NSObject, BoringNotchXPCHelperProtocol {
                         && !CGEventSource.buttonState(.hidSystemState, button: .left)
                     let session = CGSessionCopyCurrentDictionary() as? [String: Any]
                     return ClipboardPasteObservation(authorized: access.accessibility, postEventAuthorized: access.postEvents,
-                        unlocked: session != nil && session?["CGSSessionScreenIsLocked"] as? Bool != true,
+                        // A missing GUI session is not evidence of a locked display.
+                        // Both states block input, but only a real lock is silently cancelled.
+                        unlocked: session?["CGSSessionScreenIsLocked"] as? Bool != true,
+                        sessionAvailable: session != nil,
                         targetAlive: targetPID > 0 && NSRunningApplication(processIdentifier: targetPID)?.isTerminated == false,
                         clipboardUnchanged: NSPasteboard.general.changeCount == pasteboardChangeCount,
                         foregroundPID: foreground,

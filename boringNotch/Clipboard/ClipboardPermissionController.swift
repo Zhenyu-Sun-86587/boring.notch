@@ -153,6 +153,7 @@ final class ClipboardPermissionController: NSObject, NSWindowDelegate {
             ClipboardStore.shared.setPasteAccessNeeded(true)
             reason = "自动粘贴需要辅助功能权限。请重新打开剪贴板，点击“允许自动粘贴”。"
         case .snapshotUnavailable: reason = "未能恢复原输入位置。"
+        case .sessionUnavailable: reason = "自动粘贴无法连接当前登录会话。"
         case .targetUnavailable: reason = "原应用已不可用。"
         case .focusChanged: reason = "输入位置已变化，自动粘贴已取消。"
         case .focusUnavailable: reason = "未能恢复键盘焦点。"

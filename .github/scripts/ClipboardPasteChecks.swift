@@ -69,6 +69,11 @@ private struct Failure: Error { let reason: String }
         locked.sample = { time in .init(unlocked: time < 0.03, foregroundPID: 100, focusedPID: 100) }
         try check(await run(locked) == .screenLocked && locked.posts == 0, "locking cancels paste")
 
+        let noGUISession = Fixture()
+        noGUISession.sample = { _ in .init(sessionAvailable: false, foregroundPID: 100, focusedPID: 100) }
+        try check(await run(noGUISession) == .sessionUnavailable && noGUISession.posts == 0,
+                  "missing GUI session fails closed with a visible error, not a false screen-lock result")
+
         let denied = Fixture()
         denied.sample = { _ in .init(authorized: false, foregroundPID: 100, focusedPID: 100) }
         try check(await run(denied) == .unauthorized && denied.posts == 0, "authorization failure never posts")

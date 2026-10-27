@@ -7,6 +7,7 @@ struct ClipboardPasteAccess: Codable, Sendable, Equatable {
     let postEvents: Bool
     let processIdentifier: Int32
     let bundleIdentifier: String
+    var guiSessionAvailable: Bool? = nil
     var canPaste: Bool { accessibility && postEvents }
 }
 

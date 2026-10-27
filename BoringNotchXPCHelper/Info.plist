@@ -12,6 +12,9 @@
 	<dict>
 		<key>ServiceType</key>
 		<string>Application</string>
+		<!-- Clipboard events and session checks belong to the GUI client's audit session. -->
+		<key>JoinExistingSession</key>
+		<true/>
 	</dict>
 </dict>
 </plist>
