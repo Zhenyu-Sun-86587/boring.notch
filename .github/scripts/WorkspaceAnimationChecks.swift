@@ -87,7 +87,7 @@ extension NSScreen { static func screen(withUUID _: String) -> NSScreen? { main 
     var shadowFrames = 0
     var footerSamples = 0
     var measurementChanges = 0
-    var intrinsicSamples: [(phase: String, size: CGSize)] = []
+    var intrinsicSamples: [(phase: String, contentKind: Int?, size: CGSize)] = []
     var snapshotLayoutChanges = 0
     func record(frames: [String: CGRect]) {
         guard let window, let shell = frames["shell"], let content = frames["content"] else { return }
@@ -109,7 +109,7 @@ extension NSScreen { static func screen(withUUID _: String) -> NSScreen? { main 
         if shellView?.window !== window, let root = window.contentView { shellView = marker(named: "shell", in: root) }
         if contentView?.window !== window, let root = window.contentView { contentView = marker(named: "content", in: root) }
         if let root = window.contentView, let intrinsic = marker(named: "intrinsic", in: root) {
-            intrinsicSamples.append((phase: phase, size: intrinsic.bounds.size))
+            intrinsicSamples.append((phase: phase, contentKind: (intrinsic as? FrameReader.Marker)?.contentKind, size: intrinsic.bounds.size))
         }
         guard let shellView, let contentView,
               shellView.window === window, contentView.window === window else { return }
@@ -201,13 +201,16 @@ private struct WorkspaceFrames: PreferenceKey {
 private struct FrameReader: NSViewRepresentable {
     let name: String
     let metrics: WorkspaceMetrics
-    final class Marker: NSView { var name = "" }
+    var contentKind: Int? = nil
+    final class Marker: NSView { var name = ""; var contentKind: Int? }
     func makeNSView(context: Context) -> Marker {
         let view = Marker(frame: .zero)
         view.name = name
+        view.contentKind = contentKind
         return view
     }
     func updateNSView(_ view: Marker, context: Context) {
+        view.contentKind = contentKind
         if name == "shell" { metrics.shellView = view }
         else if name == "content" { metrics.contentView = view }
     }
@@ -285,7 +288,7 @@ private struct WorkspaceRequestProbe: NSViewRepresentable {
               }
             }
             .fixedSize(horizontal: !state.open, vertical: !state.open || state.tab == 4)
-            .background(FrameReader(name: "intrinsic", metrics: metrics).transaction { $0.animation = nil })
+            .background(FrameReader(name: "intrinsic", metrics: metrics, contentKind: state.open ? state.tab : -1).transaction { $0.animation = nil })
             .background {
                 GeometryReader { geometry in
                     Color.clear.preference(key: WorkspaceSurfaceMeasurementPreference.self,
@@ -462,12 +465,17 @@ private struct WorkspaceRequestProbe: NSViewRepresentable {
     try requireWorkspace(window.frameWrites == settled, "Workspace continued writing window frames after animation settled")
     try requireWorkspace(metrics.measurementChanges == settledMeasurements && metrics.measurementChanges < 12,
         "Native intrinsic geometry fed back into its own animation")
-    let closedIntrinsic = metrics.intrinsicSamples.filter { $0.phase == "close-complete" }.map(\.size)
-    let compactIntrinsic = metrics.intrinsicSamples.filter { $0.phase == "compact-height" }.map { $0.size.height }
+    // The requested phase changes before SwiftUI replaces the native marker. Tag samples
+    // with the actual represented page, so an old notification view (height 132) is not
+    // mislabeled as compact content (natural height 178) during that display-cycle boundary.
+    // Every sample of the actual compact/closed page remains subject to the strict check.
+    let closedIntrinsic = metrics.intrinsicSamples.filter { $0.phase == "close-complete" && $0.contentKind == -1 }.map(\.size)
+    let compactIntrinsic = metrics.intrinsicSamples.filter { $0.phase == "compact-height" && $0.contentKind == 4 }.map { $0.size.height }
     try requireWorkspace(closedIntrinsic.count > 10 && closedIntrinsic.allSatisfy {
         abs($0.width - 193) <= 1 && abs($0.height - 38) <= 1
     }, "Closed intrinsic measurement followed the animated shell instead of natural content: \(closedIntrinsic.prefix(16))")
     try requireWorkspace(compactIntrinsic.count > 10
+        && compactIntrinsic.allSatisfy { abs($0 - 178) <= 1 }
         && (compactIntrinsic.max()! - compactIntrinsic.min()!) <= 1,
         "Compact natural height followed its animated destination: \(compactIntrinsic)")
     try requireWorkspace(metrics.samples.count > 20 && metrics.displayCycleLayouts > 0,
@@ -485,6 +493,7 @@ private struct WorkspaceRequestProbe: NSViewRepresentable {
     try requireWorkspace(container.hitTest(empty) == nil, "Transparent stable viewport captured pointer/drop input")
     try writeWorkspaceContactSheet()
     print("PASS ordered offscreen workspace animation: samples=\(metrics.samples.count), requests=\(metrics.requests.count), displayCycleLayouts=\(metrics.displayCycleLayouts), maxCenterError=\(centerError), maxTopError=\(topError), contentTopError=\(contentError)")
+    print("Compact page sample boundary: \(metrics.intrinsicSamples.filter { $0.phase == "compact-height" }.prefix(4))")
     print("PASS composited native frames: \(metrics.renderedFrames) opaque-shell/ghost-shadow pixel checks, \(metrics.shadowFrames) shadow gradients, \(metrics.footerSamples) live footer positions; stable natural closed/compact measurements=\(closedIntrinsic.count + compactIntrinsic.count)")
     print("PASS unified stable viewport: first open, wide, interrupted closing/reversal, Hermes/clipboard/home/notification/compact heights, no-animation, close; zero window writes and transparent hit-test pass-through")
     print("Native cacheDisplay snapshots are diagnostic composition samples, not a frame-rate or WindowServer visual-acceptance measurement; snapshot-induced layout changes=\(metrics.snapshotLayoutChanges)")
