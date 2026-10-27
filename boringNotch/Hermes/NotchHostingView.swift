@@ -94,6 +94,13 @@ func makeNotchHostingView<Content: View>(rootView: Content) -> NotchHostingConta
     private weak var window: NSWindow?
     private var pending: DispatchWorkItem?
 
+    func prepareInitial(_ target: CGSize) {
+        // transaction(value:) only mutates a changed value. A cold closed launch has no
+        // size transition, so establish its resting rectangle without waiting for one.
+        guard self.target == nil else { return }
+        let token = begin(target)
+        complete(token)
+    }
     func begin(_ target: CGSize) -> UInt {
         guard target.width.isFinite, target.height.isFinite, target.width > 0, target.height > 0 else { return ticket }
         if self.target != target {
@@ -159,13 +166,16 @@ extension EnvironmentValues {
 
 /// Outside the animatable shell so completion observes that shell's spring, rather than
 /// a child transaction with no animations of its own.
+private typealias IslandViewportState = SwiftUI.State<IslandWindowViewport>
+
 struct IslandFittedWindow: ViewModifier {
     let size: CGSize
     var enabled = true
-    @State private var viewport = IslandWindowViewport()
+    @IslandViewportState private var viewport = IslandWindowViewport()
     func body(content: Content) -> some View {
         content
             .environment(\.islandWindowViewport, enabled ? viewport : nil)
+            .onAppear { if enabled { viewport.prepareInitial(size) } }
             .transaction(value: size) { transaction in
                 guard enabled else { return }
                 let token = viewport.begin(size)

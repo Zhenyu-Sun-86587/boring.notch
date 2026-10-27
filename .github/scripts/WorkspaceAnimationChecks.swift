@@ -416,6 +416,10 @@ private struct WorkspaceRequestProbe: NSViewRepresentable {
     try window.assertOffscreen()
     try requireWorkspace(window.isVisible, "Fixture was not ordered, so NSDisplayCycle evidence would be inconclusive")
     try await workspaceTick(window, metrics: metrics, count: 16)
+    if ProcessInfo.processInfo.environment["BORING_FIT_WINDOW"] == "1" {
+        try await assertNativeBounds(window, target: CGSize(width: 193, height: 38))
+        print("PASS cold closed startup: native/WindowServer bounds fitted before any open or size transition")
+    }
 
     animateWorkspace(state, metrics: metrics, phase: "open-hermes", size: CGSize(width: 640, height: 420))
     try await workspaceTick(window, metrics: metrics, count: 48)

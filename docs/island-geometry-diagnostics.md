@@ -43,3 +43,5 @@
 - Apple Transaction.addAnimationCompletion： https://developer.apple.com/documentation/swiftui/transaction/addanimationcompletion(criteria:_:)
 - Snipaste 高级配置平台限制： https://github.com/Snipaste/feedback/wiki/Advanced-Configs
 - 社区同类窗口检测报告（不同进程，不能代替本机证据）： https://github.com/Snipaste/feedback/issues/3795
+
+启动路径也需要单独验证：`.transaction(value:)` 只在值变化时执行。首次启动保持闭合、尚未发生任何展开/切换时，没有动画交易可等待，因此外层首次出现必须初始化静止边界；后续重新出现不能打断进行中的动画。原夹具先展开才检查边界，漏掉了这条路径。现增加冷启动闭合检查，原代码稳定失败（952×572），初始化后再跑整个动画序列。

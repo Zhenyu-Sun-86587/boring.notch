@@ -578,6 +578,7 @@ private struct TabReplacementRoot: View {
     try await pump([window])
     try checkSize(window, canvas, "Prepare animation canvas")
     let latest = viewport.begin(CGSize(width: 664, height: 440))
+    viewport.prepareInitial(CGSize(width: 217, height: 58)) // Reappearance must not complete an in-flight spring.
     viewport.complete(first)
     try await pump([window])
     try checkSize(window, canvas, "Ignore superseded spring completion")
