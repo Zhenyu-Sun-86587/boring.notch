@@ -174,29 +174,7 @@ final class ClipboardPermissionController: NSObject, NSWindowDelegate {
         guard !terminating else { return }
         feedbackDismiss?.cancel()
         feedbackPanel?.orderOut(nil)
-        let label = NSTextField(wrappingLabelWithString: message)
-        label.font = .systemFont(ofSize: 13)
-        label.textColor = .labelColor
-        label.preferredMaxLayoutWidth = 360
-        let size = label.fittingSize
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 392, height: max(60, size.height + 28)),
-            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        panel.isReleasedWhenClosed = false
-        panel.level = .floating
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
-        panel.ignoresMouseEvents = true
-        panel.hidesOnDeactivate = false
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        let background = NSVisualEffectView(frame: panel.contentView!.bounds)
-        background.material = .hudWindow
-        background.blendingMode = .behindWindow
-        background.state = .active
-        background.wantsLayer = true
-        background.layer?.cornerRadius = 12
-        label.frame = background.bounds.insetBy(dx: 16, dy: 14)
-        background.addSubview(label)
-        panel.contentView = background
+        let panel = ClipboardFeedbackPanel.make(message: message)
         if let frame = NSScreen.main?.visibleFrame {
             panel.setFrameOrigin(NSPoint(x: frame.midX - panel.frame.width / 2, y: frame.maxY - panel.frame.height - 50))
         }

@@ -2,6 +2,7 @@
 // No app activation, windows, AX tree, pasteboard access, permission request or input posting.
 import AppKit
 import CoreGraphics
+import ApplicationServices
 
 private struct EventFailure: Error { let message: String }
 private func checkEvent(_ condition: @autoclosure () -> Bool, _ message: String) throws {
@@ -61,6 +62,30 @@ private func checkEvent(_ condition: @autoclosure () -> Bool, _ message: String)
             try checkEvent(!ClipboardPasteEvent.post(to: target, environment: changed) && observations == 2,
                            "App switching during construction must cancel the complete pair")
         }
+        // Replay the actual mismatch: the XPC workspace cache stays at a previous
+        // PID while live keyboard ownership changes between editors. Both event
+        // preflights must query the new owner, never a previously returned value.
+        var owner = target
+        var applicationReads = 0
+        let liveOwner = {
+            ClipboardForeground.processIdentifier(readApplication: {
+                applicationReads += 1
+                return AXUIElementCreateApplication(owner)
+            })
+        }
+        var pairs = 0
+        let liveEnvironment = ClipboardPasteEvent.Environment(hasPostAccess: { true },
+            frontmostPID: liveOwner, post: { _, _ in pairs += 1 })
+        try checkEvent(ClipboardPasteEvent.post(to: target, environment: liveEnvironment), "First live editor refused")
+        owner = target + 1
+        try checkEvent(ClipboardPasteEvent.post(to: owner, environment: liveEnvironment), "Next editor must not inherit cached foreground")
+        try checkEvent(!ClipboardPasteEvent.post(to: target, environment: liveEnvironment), "Old editor cannot receive a paste")
+        try checkEvent(pairs == 4 && applicationReads == 5, "Every preflight reads current ownership; no extra shortcut")
+        try checkEvent(ClipboardForeground.processIdentifier(readApplication: { nil }) == nil,
+                       "Unavailable live ownership stays unknown")
+        try checkEvent(ClipboardForeground.processIdentifier(readApplication: { "invalid" as CFString }) == nil,
+                       "Non-element AX value must not be cast")
+        print("PASS fresh helper foreground: sequential editor changes, both preflights uncached, stale destination rejected, missing/invalid AX fails closed; metadata and recording sink only")
         print("PASS production session-event policy: single session tap, combined source, Cmd+V down/up, denied/invalid/missing targets, foreground recheck and switching cancellation; recording sink only, zero events posted")
     }
 

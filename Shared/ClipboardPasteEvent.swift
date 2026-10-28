@@ -1,5 +1,27 @@
 import AppKit
 import CoreGraphics
+import ApplicationServices
+
+/// NSWorkspace caches activation in an XPC service without an AppKit application loop.
+/// Query the system-wide keyboard owner on every preflight instead. A nonactivating
+/// panel may temporarily own it; the coordinator waits until it returns to the editor.
+/// No cached or remembered PID may redirect a session-wide shortcut.
+enum ClipboardForeground {
+    static func processIdentifier(readApplication: () -> CFTypeRef? = systemFocusedApplication) -> Int32? {
+        guard let application = readApplication(), CFGetTypeID(application) == AXUIElementGetTypeID() else { return nil }
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(application as! AXUIElement, &pid) == .success, pid > 0 else { return nil }
+        return pid
+    }
+
+    private static func systemFocusedApplication() -> CFTypeRef? {
+        let system = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(system, 0.05)
+        var application: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(system, kAXFocusedApplicationAttribute as CFString, &application) == .success else { return nil }
+        return application
+    }
+}
 
 /// Send one normal session shortcut after the helper has restored the original input.
 /// A directed process event can be received without being handled like a normal menu shortcut
@@ -12,7 +34,7 @@ enum ClipboardPasteEvent {
 
         static var system: Self {
             .init(hasPostAccess: { CGPreflightPostEventAccess() },
-                  frontmostPID: { NSWorkspace.shared.frontmostApplication?.processIdentifier },
+                  frontmostPID: { ClipboardForeground.processIdentifier() },
                   post: { event, tap in
                     #if CLIPBOARD_EVENT_FIXTURE
                     // Test executables must inject a recording sink or use their explicit

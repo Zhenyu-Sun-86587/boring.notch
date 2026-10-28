@@ -123,7 +123,7 @@ class BoringNotchXPCHelper: NSObject, BoringNotchXPCHelperProtocol {
                 var restorationAvailable = true
                 var nativeFallbackSeen = false
                 @MainActor func observe() -> ClipboardPasteObservation {
-                    let foreground = NSWorkspace.shared.frontmostApplication?.processIdentifier
+                    let foreground = ClipboardForeground.processIdentifier()
                     var assessment = focusLease.assess(original.map {
                         Self.clipboardTargets.evidence($0, restorationAvailable: restorationAvailable)
                     } ?? .init())
@@ -151,7 +151,7 @@ class BoringNotchXPCHelper: NSObject, BoringNotchXPCHelperProtocol {
                         && ![CGKeyCode(36), 76, 9].contains { CGEventSource.keyState(.hidSystemState, key: $0) }
                         && !CGEventSource.buttonState(.hidSystemState, button: .left)
                     let session = CGSessionCopyCurrentDictionary() as? [String: Any]
-                    trace("observe foreground=\(foreground.map { String($0) } ?? "nil") focused=\(focusedPID.map { String($0) } ?? "nil") match=\(assessment.match) inputReady=\(assessment.inputReady) restore=\(restoreAttempts) session=\(session != nil) locked=\(session?["CGSSessionScreenIsLocked"] as? Bool == true) released=\(released) clipboardUnchanged=\(NSPasteboard.general.changeCount == pasteboardChangeCount)")
+                    trace("observe foreground=\(foreground.map { String($0) } ?? "nil") workspace=\(NSWorkspace.shared.frontmostApplication?.processIdentifier.description ?? "nil") focused=\(focusedPID.map { String($0) } ?? "nil") match=\(assessment.match) inputReady=\(assessment.inputReady) restore=\(restoreAttempts) session=\(session != nil) locked=\(session?["CGSSessionScreenIsLocked"] as? Bool == true) released=\(released) clipboardUnchanged=\(NSPasteboard.general.changeCount == pasteboardChangeCount)")
                     return ClipboardPasteObservation(authorized: access.accessibility, postEventAuthorized: access.postEvents,
                         // A missing GUI session is not evidence of a locked display.
                         // Both states block input, but only a real lock is silently cancelled.
