@@ -109,7 +109,7 @@ class BoringNotchXPCHelper: NSObject, BoringNotchXPCHelperProtocol {
                     previousDiagnostic = detail
                     diagnosticRows.append("ms=\(Int((ProcessInfo.processInfo.systemUptime - diagnosticStart) * 1000)) " + detail)
                 }
-                trace("begin target=\(targetPID) host=\(hostPID) helper=\(ProcessInfo.processInfo.processIdentifier) ax=\(access.accessibility) post=\(access.postEvents)")
+                trace("begin target=\(targetPID) host=\(hostPID) helper=\(ProcessInfo.processInfo.processIdentifier) ax=\(access.accessibility) post=\(access.postEvents) appKit=\(NSApp != nil) prohibited=\(NSApp?.activationPolicy() == .prohibited)")
                 guard access.accessibility else { reply(ClipboardPasteResult.unauthorized.rawValue, diagnosticRows); return }
                 guard access.postEvents else { reply(ClipboardPasteResult.postEventUnauthorized.rawValue, diagnosticRows); return }
                 // Tokens are optional AX enhancements. XPC restarts discard their in-memory
@@ -151,7 +151,7 @@ class BoringNotchXPCHelper: NSObject, BoringNotchXPCHelperProtocol {
                         && ![CGKeyCode(36), 76, 9].contains { CGEventSource.keyState(.hidSystemState, key: $0) }
                         && !CGEventSource.buttonState(.hidSystemState, button: .left)
                     let session = CGSessionCopyCurrentDictionary() as? [String: Any]
-                    trace("observe foreground=\(foreground.map { String($0) } ?? "nil") workspace=\(NSWorkspace.shared.frontmostApplication?.processIdentifier.description ?? "nil") focused=\(focusedPID.map { String($0) } ?? "nil") match=\(assessment.match) inputReady=\(assessment.inputReady) restore=\(restoreAttempts) session=\(session != nil) locked=\(session?["CGSSessionScreenIsLocked"] as? Bool == true) released=\(released) clipboardUnchanged=\(NSPasteboard.general.changeCount == pasteboardChangeCount)")
+                    trace("observe foreground=\(foreground.map { String($0) } ?? "nil") workspace=\(NSWorkspace.shared.frontmostApplication?.processIdentifier.description ?? "nil") focused=\(focusedPID.map { String($0) } ?? "nil") focusError=\(error.rawValue) match=\(assessment.match) inputReady=\(assessment.inputReady) restore=\(restoreAttempts) session=\(session != nil) locked=\(session?["CGSSessionScreenIsLocked"] as? Bool == true) released=\(released) clipboardUnchanged=\(NSPasteboard.general.changeCount == pasteboardChangeCount)")
                     return ClipboardPasteObservation(authorized: access.accessibility, postEventAuthorized: access.postEvents,
                         // A missing GUI session is not evidence of a locked display.
                         // Both states block input, but only a real lock is silently cancelled.

@@ -24,6 +24,8 @@
 
 辅助进程的 `foreground` 现在来自系统级 `AXFocusedApplication` 实时查询，最终按键投递也使用同一查询；`workspace` 仅作诊断对照，不参与授权或目标判断。实际日志曾连续出现主程序与 AX 焦点均指向 Edge，而 XPC 的 `NSWorkspace.frontmostApplication` 固定返回已退出的旧 PID，导致在 0–1 ms 内误报 `focusChanged`。不能通过延迟、重试按键或放宽目标校验来修复这种缓存过期。实时查询失败保持未知，不使用记忆中的应用发送全局按键；真正切换应用、输入位置变化或剪贴板更新仍取消自动粘贴。
 
+若日志同时出现 `ax=true post=true gui=true`、`match=matched inputReady=true`，但 `foreground=nil focused=nil` 并在约 1.8 秒后返回 `focusUnavailable`，需检查辅助进程的 AppKit 初始化。原生 XPC 对照已证实：仅 `JoinExistingSession=true` 和 XPC listener 的运行循环不足以建立 AppKit 的 WindowServer 连接；未初始化时系统级 AX 返回 `cannotComplete (-25204)`，而单个应用的 AX 属性仍可正常读取。辅助进程入口现在先调用 `ClipboardHelperRuntime.prepare()`，以禁止激活的策略初始化 `NSApplication.shared`，再接受连接。`.github/scripts/test_clipboard_runtime.py` 使用真实签名的沙盒宿主与 XPC 服务，在同一辅助进程内对比初始化前后，只采集 API 错误码、PID 和运行状态，不读取输入元素、标题或剪贴板，也不发送事件、请求权限或激活窗口。测试需区分实际复现、无既有授权时跳过和当前焦点不可观测的情况。
+
 `posted` 只表示提交了按键，不表示目标编辑器已经消费内容。自动化测试只能确认记录器、协议、隔离会话与布局；Hermes 实际输入和 Edge／QQ 实际粘贴仍须根据复现日志定位。本次主要交付诊断能力，不宣称两个故障已经解决。
 
 ## 2026-10-27 鼠标入口与粘贴收起修复

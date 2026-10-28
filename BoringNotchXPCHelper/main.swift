@@ -37,6 +37,9 @@ class ServiceDelegate: NSObject, NSXPCListenerDelegate {
 }
 
 // Create the delegate for the service.
+// Establish AppKit's GUI connection before servicing focus queries. Joining the
+// client's audit session alone is insufficient for system-wide AX attributes.
+MainActor.assumeIsolated { ClipboardHelperRuntime.prepare() }
 let delegate = ServiceDelegate()
 
 // Set up the one NSXPCListener for this service. It will handle all incoming connections.

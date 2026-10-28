@@ -2,6 +2,15 @@ import AppKit
 import CoreGraphics
 import ApplicationServices
 
+enum ClipboardHelperRuntime {
+    /// An XPC listener's run loop does not initialize AppKit's WindowServer connection.
+    /// System-wide AX focus queries otherwise return cannotComplete (-25204), even
+    /// though AXIsProcessTrusted and per-application queries succeed. Never activate.
+    @MainActor static func prepare() {
+        _ = NSApplication.shared.setActivationPolicy(.prohibited)
+    }
+}
+
 /// NSWorkspace caches activation in an XPC service without an AppKit application loop.
 /// Query the system-wide keyboard owner on every preflight instead. A nonactivating
 /// panel may temporarily own it; the coordinator waits until it returns to the editor.

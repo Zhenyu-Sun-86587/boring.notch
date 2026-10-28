@@ -75,6 +75,8 @@ jobs:
         run: |
           set -euo pipefail
           python3 .github/scripts/test_clipboard_gui_session.py 2>&1 | tee build/clipboard-gui-session-report.txt
+      - name: Verify helper AppKit runtime and real AX focus without activating UI
+        run: python3 .github/scripts/test_clipboard_runtime.py
       - name: Verify native window resizing without displaying UI
         shell: bash
         run: |
@@ -156,6 +158,7 @@ jobs:
             build/clipboard-drawer-scroll-report.txt
             build/interaction-diagnostics-report.txt
             build/clipboard-gui-session-report.txt
+            build/clipboard-runtime-report.txt
             build/clipboard-alert-report.txt
             build/hermes-markdown-report.txt
             build/hermes-submission-report.txt
@@ -185,6 +188,7 @@ jobs:
             build/clipboard-drawer-scroll-report.txt
             build/interaction-diagnostics-report.txt
             build/clipboard-gui-session-report.txt
+            build/clipboard-runtime-report.txt
             build/clipboard-alert-report.txt
             build/hermes-markdown-report.txt
             build/hermes-submission-report.txt
