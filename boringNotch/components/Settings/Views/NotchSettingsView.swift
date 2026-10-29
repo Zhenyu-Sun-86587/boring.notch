@@ -196,6 +196,10 @@ struct NotchSettingsView: View {
                 Defaults.Toggle(key: .closeGestureEnabled) {
                     Text("Close gesture")
                 }
+                Defaults.Toggle(key: .scrollToCloseEnabled) {
+                    Text("Scroll to close notch")
+                }
+                .help("Allow mouse wheel and trackpad scrolling to close the notch. Leave off to scroll content such as clipboard history.")
                 Slider(value: $gestureSensitivity, in: 100...300, step: 100) {
                     HStack {
                         Text("Gesture sensitivity")
@@ -218,7 +222,7 @@ struct NotchSettingsView: View {
             }
         } footer: {
             Text(
-                "Two-finger swipe up on notch to close, two-finger swipe down on notch to open when **Open notch on hover** option is disabled"
+                "Enable **Scroll to close notch** to close with an upward scroll. Two-finger swipe down on notch to open when **Open notch on hover** option is disabled."
             )
             .multilineTextAlignment(.trailing)
             .foregroundStyle(.secondary)
