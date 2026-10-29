@@ -33903,6 +33903,54 @@
           }
         }
       }
+    },
+    "Scroll to close notch" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scroll to close notch"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "滚动收起灵动岛"
+          }
+        }
+      }
+    },
+    "Allow mouse wheel and trackpad scrolling to close the notch. Leave off to scroll content such as clipboard history." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Allow mouse wheel and trackpad scrolling to close the notch. Leave off to scroll content such as clipboard history."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "允许通过鼠标滚轮或触控板滚动收起灵动岛。关闭后可正常滚动剪贴板历史等内容。"
+          }
+        }
+      }
+    },
+    "Enable **Scroll to close notch** to close with an upward scroll. Two-finger swipe down on notch to open when **Open notch on hover** option is disabled." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enable **Scroll to close notch** to close with an upward scroll. Two-finger swipe down on notch to open when **Open notch on hover** option is disabled."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "启用“**滚动收起灵动岛**”后，可向上滚动收起。关闭“**悬停时展开灵动岛**”时，可在灵动岛上双指下滑展开。"
+          }
+        }
+      }
     }
   },
   "version" : "1.1"
