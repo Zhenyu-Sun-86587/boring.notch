@@ -48,6 +48,7 @@ struct ContentView: View {
     @Namespace var albumArtNamespace
 
     @Default(.showNotHumanFace) var showNotHumanFace
+    @Default(.scrollToCloseEnabled) var scrollToCloseEnabled
 
     // Use standardized animations from StandardAnimations enum
     private let animationSpring = StandardAnimations.interactive
@@ -353,7 +354,7 @@ struct ContentView: View {
                     }
                     .conditionalModifier(Defaults[.closeGestureEnabled] && Defaults[.enableGestures] && !shouldDisplayNowPlayingFallbackNotice) { view in
                         view
-                            .panGesture(direction: .up) { translation, phase in
+                            .panGesture(direction: .up, scrollEnabled: scrollToCloseEnabled) { translation, phase in
                                 handleUpGesture(translation: translation, phase: phase)
                             }
                     }
